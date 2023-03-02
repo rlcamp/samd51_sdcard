@@ -6,6 +6,9 @@
 #define ICHANNEL_SPI_WRITE 1
 #define ICHANNEL_SPI_READ 2
 
+/* smaller values use more cpu while waiting but have lower latency */
+#define CARD_BUSY_BYTES_PER_CHECK 16
+
 __attribute__((weak, aligned(16))) SECTION_DMAC_DESCRIPTOR DmacDescriptor dmac_descriptors[8] = { 0 }, dmac_writeback[8] = { 0 };
 
 static void spi_dma_init(void) {
@@ -142,12 +145,95 @@ void spi_init(unsigned long baudrate) {
 }
 
 static volatile char busy = 0;
+static volatile char waiting_while_card_busy;
+static unsigned char card_busy_result;
+
+static volatile char waiting_while_card_write;
+static uint16_t pending_crc;
+static unsigned char card_write_response;
+
+void spi_wait_while_card_busy_nonblocking_wait(void) {
+    while (waiting_while_card_busy) __WFI();
+}
+
+static void spi_wait_while_card_busy_nonblocking_start(void) {
+    SERCOM1->SPI.CTRLB.bit.RXEN = 1;
+    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+
+    /* TODO: almost all of this descriptor reconfig can usually be skipped */
+    static const unsigned char all_ones = 0xff;
+    *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + ICHANNEL_SPI_WRITE) = (DmacDescriptor) {
+        .BTCNT.reg = CARD_BUSY_BYTES_PER_CHECK,
+        .SRCADDR.reg = (size_t)&all_ones,
+        .DSTADDR.reg = (size_t)&(SERCOM1->SPI.DATA.reg),
+        .BTCTRL = {
+            .bit.VALID = 1,
+            .bit.SRCINC = 0, /* read from the same value every time */
+            .bit.DSTINC = 0, /* write to the same register every time */
+            .bit.BLOCKACT = DMAC_BTCTRL_BLOCKACT_NOACT_Val, /* do not fire an interrupt */
+        }
+    };
+
+    *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + ICHANNEL_SPI_READ) = (DmacDescriptor) {
+        .BTCNT.reg = CARD_BUSY_BYTES_PER_CHECK, /* number of beats in transaction, where one beat is one byte */
+        .SRCADDR.reg = (size_t)&(SERCOM1->SPI.DATA.reg),
+        .DSTADDR.reg = (size_t)&card_busy_result,
+        .BTCTRL = {
+            .bit.VALID = 1,
+            .bit.SRCINC = 0, /* read from the same register every time */
+            .bit.DSTINC = 0, /* read to the same byte every time */
+            .bit.BLOCKACT = DMAC_BTCTRL_BLOCKACT_INT_Val, /* fire an interrupt */
+        }
+    };
+
+    /* clear prior interrupt flags */
+    DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
+    DMAC->Channel[ICHANNEL_SPI_READ].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
+
+    /* disable interrupt for write channel, enable for read channel */
+    DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTENCLR.bit.TCMPL = 1;
+    DMAC->Channel[ICHANNEL_SPI_READ].CHINTENSET.bit.TCMPL = 1;
+
+    waiting_while_card_busy = 1;
+
+    /* ensure changes to descriptors have propagated to sram prior to enabling peripheral */
+    __DSB();
+
+    /* setting this does nothing yet */
+    DMAC->Channel[ICHANNEL_SPI_READ].CHCTRLA.bit.ENABLE = 1;
+
+    /* setting this starts the transaction */
+    DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
+}
 
 void DMAC_1_Handler(void) {
     if (!(DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.bit.TCMPL)) return;
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
 
     busy = 0;
+
+    if (waiting_while_card_write) {
+        /* blocking send of crc */
+        /* TODO: the samd51 DMAC can supposedly calculate this itself, use that if so */
+        while (!SERCOM1->SPI.INTFLAG.bit.DRE);
+        SERCOM1->SPI.DATA.bit.DATA = (pending_crc << 8U) & 0xff;
+        while (!SERCOM1->SPI.INTFLAG.bit.DRE);
+        SERCOM1->SPI.DATA.bit.DATA = (pending_crc) & 0xff;
+
+        /* wait for crc to complete sending before enabling rx */
+        while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+
+        SERCOM1->SPI.CTRLB.bit.RXEN = 1;
+        while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+
+        /* blocking receive of one byte */
+        SERCOM1->SPI.DATA.bit.DATA = 0xff;
+        while (!SERCOM1->SPI.INTFLAG.bit.RXC);
+        card_write_response = SERCOM1->SPI.DATA.bit.DATA;
+
+        spi_wait_while_card_busy_nonblocking_start();
+        waiting_while_card_write = 0;
+    }
 }
 
 void DMAC_2_Handler(void) {
@@ -155,6 +241,18 @@ void DMAC_2_Handler(void) {
     DMAC->Channel[ICHANNEL_SPI_READ].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
 
     busy = 0;
+
+    if (waiting_while_card_busy) {
+        if (0xff == card_busy_result)
+            waiting_while_card_busy = 0;
+        else {
+            /* need to try again */
+            DMAC->Channel[ICHANNEL_SPI_READ].CHCTRLA.bit.ENABLE = 1;
+            DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
+
+            return;
+        }
+    }
 }
 
 static void spi_receive_nonblocking_start(void * buf, const size_t count) {
@@ -226,6 +324,7 @@ static void spi_send_nonblocking_start(const void * buf, const size_t count) {
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTENSET.bit.TCMPL = 1;
 
     busy = 1;
+
     /* ensure changes to descriptors have propagated to sram prior to enabling peripheral */
     __DSB();
 
@@ -237,39 +336,28 @@ void spi_send_nonblocking_wait(void) {
     while (busy) __WFI();
 }
 
-unsigned char spi_send_sd_block(const void * buf, const uint16_t crc, const size_t size_total) {
+int spi_send_sd_block_finish(void) {
+    spi_send_nonblocking_wait();
+    spi_wait_while_card_busy_nonblocking_wait();
+
+    uint16_t response = card_write_response;
+    if (response != 0xE5)
+        fprintf(stderr, "%s(%d): response 0x%2.2X\n", __func__, __LINE__, response);
+
+    return response != 0xE5 ? -1 : 0;
+}
+
+void spi_send_sd_block_start(const void * buf, const uint16_t crc, const size_t size_total) {
     SERCOM1->SPI.CTRLB.bit.RXEN = 0;
     while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
 
     while (!SERCOM1->SPI.INTFLAG.bit.DRE);
     SERCOM1->SPI.DATA.bit.DATA = (size_total / 512) > 1 ? 0xfc : 0xfe;
 
+    pending_crc = crc;
+    waiting_while_card_write = 1;
+
     spi_send_nonblocking_start(buf, 512);
-    spi_send_nonblocking_wait();
-
-    /* send crc */
-    while (!SERCOM1->SPI.INTFLAG.bit.DRE);
-    SERCOM1->SPI.DATA.bit.DATA = (crc << 8U) & 0xff;
-    while (!SERCOM1->SPI.INTFLAG.bit.DRE);
-    SERCOM1->SPI.DATA.bit.DATA = (crc) & 0xff;
-
-    /* wait for crc to complete sending before enabling rx */
-    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
-
-    SERCOM1->SPI.CTRLB.bit.RXEN = 1;
-    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
-
-    /* receive one byte */
-    SERCOM1->SPI.DATA.bit.DATA = 0xff;
-    while (!SERCOM1->SPI.INTFLAG.bit.RXC);
-    const unsigned char response = SERCOM1->SPI.DATA.bit.DATA;
-
-    do {
-        SERCOM1->SPI.DATA.bit.DATA = 0xff;
-        while (!SERCOM1->SPI.INTFLAG.bit.RXC);
-    } while (0xff != SERCOM1->SPI.DATA.bit.DATA);
-
-    return response;
 }
 
 void spi_receive_nonblocking_wait(void) {

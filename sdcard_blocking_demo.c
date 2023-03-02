@@ -62,41 +62,35 @@ void setup() {
     printf("\n");
 #endif
 
-    spi_sd_cmd58();
-
 #define ERASE_CYCLE_SIZE 4194304
-    for (size_t ival = 0; ival < 128; ival++) {
-        buf[ival * 4 + 0] = ival;
-        buf[ival * 4 + 1] = 0;
-        buf[ival * 4 + 2] = 1;
-        buf[ival * 4 + 3] = 2;
-    }
-
     for (size_t iaddress = 0; iaddress < ERASE_CYCLE_SIZE * 8; iaddress += ERASE_CYCLE_SIZE) {
+        const size_t blocks = ERASE_CYCLE_SIZE / 512;
         const unsigned long micros_first = micros();
-        unsigned long micros_before = micros_first;
-        unsigned long elapsed_numerator = 0, elapsed_denominator = 0, elapsed_max = 0;
 
         spi_sd_write_data_start(ERASE_CYCLE_SIZE, iaddress);
 
-        for (size_t iblock = 0; iblock < ERASE_CYCLE_SIZE / 512; iblock++) {
+        for (size_t iblock = 0; iblock < blocks; iblock++) {
+            unsigned char * restrict const buf_now = buf + 512 * (iblock % 2);
 
-            spi_sd_write_one_data_block(buf, ERASE_CYCLE_SIZE);
-            const unsigned long micros_now = micros();
-            const unsigned long elapsed = micros_now - micros_before;
-            elapsed_numerator += elapsed;
-            elapsed_denominator++;
-            if (elapsed > elapsed_max) {
-                elapsed_max = elapsed;
-                printf("%s: %lu us elapsed for block %u\n", __func__, elapsed, iblock);
+            for (size_t ival = 0; ival < 128; ival++) {
+                buf_now[ival * 4 + 0] = ival;
+                buf_now[ival * 4 + 1] = 0;
+                buf_now[ival * 4 + 2] = 1;
+                buf_now[ival * 4 + 3] = 2;
             }
-            micros_before = micros_now;
+
+            const uint16_t crc = crc16_itu_t(0, buf_now, 512);
+            if (iblock) spi_send_sd_block_finish();
+            spi_send_sd_block_start(buf_now, crc, ERASE_CYCLE_SIZE);
         }
+
+        spi_send_sd_block_finish();
 
         spi_sd_write_data_end(ERASE_CYCLE_SIZE);
 
-        printf("%s: %lu us elapsed total\n", __func__, micros() - micros_first);
-        printf("%s: %lu us max per block, %lu ns mean\n", __func__, elapsed_max, (unsigned long)((elapsed_numerator * 1000LLU + elapsed_denominator / 2) / elapsed_denominator));
+        const unsigned long elapsed = micros() - micros_first;
+
+        printf("%s: %lu us elapsed total, %lu ns mean per 512 bytes\n", __func__, elapsed, (unsigned long)(elapsed * 1000ULL + blocks / 2) / blocks);
     }
 }
 

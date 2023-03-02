@@ -59,7 +59,7 @@ static int rx_data_block(unsigned char * buf) {
     return 0;
 }
 
-static uint16_t crc16_itu_t(uint16_t v, const unsigned char * src, size_t len) {
+uint16_t crc16_itu_t(uint16_t v, const unsigned char * src, size_t len) {
     for (size_t ibyte = 0; ibyte < len; ibyte++) {
         v = (v >> 8U) | (v << 8U);
         v ^= src[ibyte];
@@ -268,40 +268,14 @@ void spi_sd_write_data_end(const size_t size) {
     cs_high();
 }
 
-
-int spi_sd_write_one_data_block(unsigned char * block, const size_t size_total) {
-#if 1
-    return spi_send_sd_block(block, 0, size_total);
-#else
-    /* data token */
-    spi_send((unsigned char[1]) { (size_total / 512) > 1 ? 0xfc : 0xfe }, 1);
-
-    const uint16_t crc = 0xffff;//crc16_itu_t(0, block, 512);
-
-    /* write the 512 bytes */
-    spi_send(block, 512);
-
-    /* write two crc bytes */
-    spi_send((unsigned char[2]) { crc << 8U, crc }, 2);
-
-    uint8_t response = 0xFF;
-    spi_receive(&response, 1);
-    if (response != 0xE5)
-        fprintf(stderr, "%s(%d): response 0x%2.2X\n", __func__, __LINE__, response);
-
-    wait_for_card_ready();
-#endif
-
-    return 0;
-}
-
 int spi_sd_write_data(unsigned char * buf, const unsigned long size, const unsigned long address) {
     /* note that address and size must be multiples of 512 */
     if (-1 == spi_sd_write_data_start(size, address)) return -1;
 
-    for (unsigned char * stop = buf + size; buf < stop; buf += 512)
-        if (-1 == spi_sd_write_one_data_block(buf, size)) return -1;
-
+    for (unsigned char * stop = buf + size; buf < stop; buf += 512) {
+        spi_send_sd_block_start(buf, crc16_itu_t(0, buf, 512), size);
+        if (-1 == spi_send_sd_block_finish()) return -1;
+    }
     spi_sd_write_data_end(size);
 
     return 0;
