@@ -218,7 +218,7 @@ void DMAC_1_Handler(void) {
 
         /* blocking send of crc */
         while (!SERCOM1->SPI.INTFLAG.bit.DRE);
-        SERCOM1->SPI.DATA.bit.DATA = (crc << 8U) & 0xff;
+        SERCOM1->SPI.DATA.bit.DATA = (crc >> 8U) & 0xff;
         while (!SERCOM1->SPI.INTFLAG.bit.DRE);
         SERCOM1->SPI.DATA.bit.DATA = (crc) & 0xff;
 
