@@ -141,6 +141,22 @@ void spi_init(unsigned long baudrate) {
     while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
 }
 
+static volatile char busy = 0;
+
+void DMAC_1_Handler(void) {
+    if (!(DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.bit.TCMPL)) return;
+    DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
+
+    busy = 0;
+}
+
+void DMAC_2_Handler(void) {
+    if (!(DMAC->Channel[ICHANNEL_SPI_READ].CHINTFLAG.bit.TCMPL)) return;
+    DMAC->Channel[ICHANNEL_SPI_READ].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
+
+    busy = 0;
+}
+
 static void spi_receive_nonblocking_start(void * buf, const size_t count) {
     SERCOM1->SPI.CTRLB.bit.RXEN = 1;
     while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
@@ -166,7 +182,7 @@ static void spi_receive_nonblocking_start(void * buf, const size_t count) {
             .bit.VALID = 1,
             .bit.SRCINC = 0, /* read from the same register every time */
             .bit.DSTINC = 1, /* increment destination register after every byte */
-            .bit.BLOCKACT = DMAC_BTCTRL_BLOCKACT_NOACT_Val, /* fire an interrupt */
+            .bit.BLOCKACT = DMAC_BTCTRL_BLOCKACT_INT_Val, /* fire an interrupt */
         }
     };
 
@@ -174,9 +190,11 @@ static void spi_receive_nonblocking_start(void * buf, const size_t count) {
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
     DMAC->Channel[ICHANNEL_SPI_READ].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
 
-    /* make sure interrupts are disabled */
+    /* disable interrupt for write channel, enable for read channel */
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTENCLR.bit.TCMPL = 1;
-    DMAC->Channel[ICHANNEL_SPI_READ].CHINTENCLR.bit.TCMPL = 1;
+    DMAC->Channel[ICHANNEL_SPI_READ].CHINTENSET.bit.TCMPL = 1;
+
+    busy = 1;
 
     /* ensure changes to descriptors have propagated to sram prior to enabling peripheral */
     __DSB();
@@ -201,11 +219,13 @@ static void spi_send_nonblocking_start(const void * buf, const size_t count) {
         }
     };
 
-
     /* clear pending interrupt from before */
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
-    DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTENCLR.bit.TCMPL = 1;
 
+    /* enable interrupt on write completion */
+    DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTENSET.bit.TCMPL = 1;
+
+    busy = 1;
     /* ensure changes to descriptors have propagated to sram prior to enabling peripheral */
     __DSB();
 
@@ -214,9 +234,7 @@ static void spi_send_nonblocking_start(const void * buf, const size_t count) {
 }
 
 void spi_send_nonblocking_wait(void) {
-    while (!(DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.bit.TCMPL));
-
-    DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
+    while (busy) __WFI();
 }
 
 unsigned char spi_send_sd_block(const void * buf, const uint16_t crc, const size_t size_total) {
@@ -255,9 +273,7 @@ unsigned char spi_send_sd_block(const void * buf, const uint16_t crc, const size
 }
 
 void spi_receive_nonblocking_wait(void) {
-    while (!(DMAC->Channel[ICHANNEL_SPI_READ].CHINTFLAG.bit.TCMPL));
-    DMAC->Channel[ICHANNEL_SPI_READ].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
-    DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
+    while (busy) __WFI();
 }
 
 void spi_receive(void * buf, const size_t size) {
