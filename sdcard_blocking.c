@@ -23,12 +23,25 @@ static uint8_t r1_response(void) {
     return result;
 }
 
-static uint8_t command_and_r1_response(const uint8_t cmd, const uint32_t arg) {
-    /* in spi mode we can hardcode the two nonzero CRCs we actually need */
-    const uint8_t crc = (0 == cmd) ? 0x94 : (8 == cmd && 0x1aa == arg) ? 0x86 : 0;
+static unsigned char crc7_left_shifted(const unsigned char * restrict const message, const size_t length) {
+    const unsigned char polynomial = 0b10001001;
+    unsigned char crc = 0;
 
-    /* why does making this an spi_send() break things */
-    spi_send((unsigned char[6]) { cmd | 0x40, arg >> 24, arg >> 16, arg >> 8, arg, crc | 0x01 }, 6);
+    for (size_t ibyte = 0; ibyte < length; ibyte++) {
+        crc ^= message[ibyte];
+
+        for (size_t ibit = 0; ibit < 8; ibit++)
+            crc = (crc & 0x80u) ? (crc << 1) ^ (polynomial << 1) : (crc << 1);
+    }
+
+    return crc & 0xfe;
+}
+
+static uint8_t command_and_r1_response(const uint8_t cmd, const uint32_t arg) {
+    unsigned char msg[6] = { cmd | 0x40, arg >> 24, arg >> 16, arg >> 8, arg, 0x01 };
+    msg[5] |= crc7_left_shifted(msg, 5);
+
+    spi_send(msg, 6);
 
     /* CMD12 wants an extra byte prior to the response */
     if (12 == cmd) spi_send((unsigned char[1]) { 0xff }, 1);
@@ -55,7 +68,11 @@ static int rx_data_block(unsigned char * buf) {
     spi_receive(buf, 512);
 
     /* read and discard two crc bytes */
-    spi_receive((unsigned char[2]) { 0 }, 2);
+    unsigned char crcbuf[2];
+    spi_receive(crcbuf, 2);
+    const uint16_t crc = crcbuf[0] << 8 | crcbuf[1];
+
+    if (0) fprintf(stderr, "%s: 0x%4.4X\n", __func__, crc);
     return 0;
 }
 
@@ -176,9 +193,25 @@ void spi_sd_init(void) {
 
         cs_high();
 
-        if (r1_response <= 1) break;
         fprintf(stderr, "%s: cmd16 response: 0x%2.2X\n", __func__, r1_response);
+        if (r1_response <= 1) break;
     }
+
+#if 1
+    /* cmd59 */
+    while (1) {
+        fprintf(stderr, "%s: sending cmd59\n", __func__);
+        cs_low();
+        wait_for_card_ready();
+
+        const uint8_t r1_response = command_and_r1_response(59, 1);
+
+        cs_high();
+
+        fprintf(stderr, "%s: cmd59 response: 0x%2.2X\n", __func__, r1_response);
+        if (r1_response <= 1) break;
+    }
+#endif
 }
 
 int spi_sd_read_data(unsigned char * buf, unsigned long size, unsigned long address) {
@@ -258,11 +291,17 @@ void spi_sd_write_data_end(const size_t size) {
 
 int spi_sd_write_data(unsigned char * buf, const unsigned long size, const unsigned long address) {
     /* note that address and size must be multiples of 512 */
-    if (-1 == spi_sd_write_data_start(size, address)) return -1;
+    if (-1 == spi_sd_write_data_start(size, address)) {
+        fprintf(stderr, "%s(%d): got here\n", __func__, __LINE__);
+        return -1;
+    }
 
     for (unsigned char * stop = buf + size; buf < stop; buf += 512) {
         spi_send_sd_block_start(buf, size);
-        if (-1 == spi_send_sd_block_finish()) return -1;
+        if (-1 == spi_send_sd_block_finish()) {
+            fprintf(stderr, "%s(%d): got here\n", __func__, __LINE__);
+            return -1;
+        }
     }
     spi_sd_write_data_end(size);
 

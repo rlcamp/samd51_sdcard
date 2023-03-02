@@ -62,10 +62,11 @@ void setup() {
     printf("\n");
 #endif
 
+    char error = 0;
 #define ERASE_CYCLE_SIZE 4194304
     for (size_t iaddress = 0; iaddress < ERASE_CYCLE_SIZE * 8; iaddress += ERASE_CYCLE_SIZE) {
         const size_t blocks = ERASE_CYCLE_SIZE / 512;
-        const unsigned long micros_first = micros();
+        const unsigned long millis_first = millis();
 
         spi_sd_write_data_start(ERASE_CYCLE_SIZE, iaddress);
 
@@ -79,17 +80,23 @@ void setup() {
                 buf_now[ival * 4 + 3] = 2;
             }
 
-            if (iblock) spi_send_sd_block_finish();
+            if (iblock)
+                if (-1 == spi_send_sd_block_finish()) {
+                    error = 1;
+                    break;
+                }
             spi_send_sd_block_start(buf_now, ERASE_CYCLE_SIZE);
         }
+
+        if (error) break;
 
         spi_send_sd_block_finish();
 
         spi_sd_write_data_end(ERASE_CYCLE_SIZE);
 
-        const unsigned long elapsed = micros() - micros_first;
+        const unsigned long elapsed = millis() - millis_first;
 
-        printf("%s: %lu us elapsed total, %lu ns mean per 512 bytes\n", __func__, elapsed, (unsigned long)(elapsed * 1000ULL + blocks / 2) / blocks);
+        printf("%s: %lu ns mean per 512 bytes, %lu kB/s\n", __func__, (unsigned long)((elapsed * 1000000ULL + blocks / 2) / blocks), ((blocks * 512 * 1000) / 1024 + elapsed / 2) / elapsed);
     }
 }
 
