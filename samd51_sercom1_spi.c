@@ -40,7 +40,6 @@ static void spi_dma_init(void) {
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.TRIGSRC = 0x07; /* trigger when sercom1 is ready to send a new byte */
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.TRIGACT = DMAC_CHCTRLA_TRIGACT_BURST_Val; /* transfer one byte when triggered */
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.BURSTLEN = DMAC_CHCTRLA_BURSTLEN_SINGLE_Val; /* one burst = one beat */
-    //    DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTENSET.bit.TCMPL = 1; /* fire interrupt on completion (defined in descriptor) */
 
     /* must agree with ICHANNEL_SPI_READ */
     static_assert(2 == ICHANNEL_SPI_READ, "dmac channel isr mismatch");
@@ -58,9 +57,6 @@ static void spi_dma_init(void) {
     DMAC->Channel[ICHANNEL_SPI_READ].CHCTRLA.bit.TRIGSRC = 0x06; /* trigger when sercom1 has received one new byte */
     DMAC->Channel[ICHANNEL_SPI_READ].CHCTRLA.bit.TRIGACT = DMAC_CHCTRLA_TRIGACT_BURST_Val; /* transfer one byte when triggered */
     DMAC->Channel[ICHANNEL_SPI_READ].CHCTRLA.bit.BURSTLEN = DMAC_CHCTRLA_BURSTLEN_SINGLE_Val; /* one burst = one beat */
-    //    DMAC->Channel[ICHANNEL_SPI_READ].CHINTENSET.bit.TCMPL = 1; /* fire interrupt on completion (defined in descriptor) */
-
-    __DSB();
 }
 
 void cs_init(void) {
@@ -229,8 +225,6 @@ unsigned char spi_send_sd_block(const void * buf, const uint16_t crc, const size
 
     while (!SERCOM1->SPI.INTFLAG.bit.DRE);
     SERCOM1->SPI.DATA.bit.DATA = (size_total / 512) > 1 ? 0xfc : 0xfe;
-
-    __DSB(); /* TODO: needed? */
 
     spi_send_nonblocking_start(buf, 512);
     spi_send_nonblocking_wait();
