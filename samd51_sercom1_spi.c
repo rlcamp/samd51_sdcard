@@ -216,6 +216,9 @@ void DMAC_1_Handler(void) {
         while (DMAC->CRCSTATUS.bit.CRCBUSY);
         const uint16_t crc = DMAC->CRCCHKSUM.reg;
 
+        /* TODO: somewhat hack fix, might not be the actual fix */
+        while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+
         /* blocking send of crc */
         while (!SERCOM1->SPI.INTFLAG.bit.DRE);
         SERCOM1->SPI.DATA.bit.DATA = (crc >> 8U) & 0xff;
