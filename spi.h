@@ -15,7 +15,7 @@ void cs_high(void);
 void cs_low(void);
 void cs_init(void);
 
-void spi_send_sd_block_start(const void * buf, const uint16_t crc, const size_t size_total);
+void spi_send_sd_block_start(const void * buf, const size_t size_total);
 int spi_send_sd_block_finish(void);
 
 #ifdef __cplusplus

@@ -59,18 +59,6 @@ static int rx_data_block(unsigned char * buf) {
     return 0;
 }
 
-uint16_t crc16_itu_t(uint16_t v, const unsigned char * src, size_t len) {
-    for (size_t ibyte = 0; ibyte < len; ibyte++) {
-        v = (v >> 8U) | (v << 8U);
-        v ^= src[ibyte];
-        v ^= (v & 0xffU) >> 4U;
-        v ^= v << 12U;
-        v ^= (v & 0xffU) << 5U;
-    }
-
-    return v;
-}
-
 void spi_sd_cmd58(void) {
     while (1) {
         fprintf(stderr, "%s: sending cmd58\n", __func__);
@@ -273,7 +261,7 @@ int spi_sd_write_data(unsigned char * buf, const unsigned long size, const unsig
     if (-1 == spi_sd_write_data_start(size, address)) return -1;
 
     for (unsigned char * stop = buf + size; buf < stop; buf += 512) {
-        spi_send_sd_block_start(buf, crc16_itu_t(0, buf, 512), size);
+        spi_send_sd_block_start(buf, size);
         if (-1 == spi_send_sd_block_finish()) return -1;
     }
     spi_sd_write_data_end(size);

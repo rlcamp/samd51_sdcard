@@ -79,9 +79,8 @@ void setup() {
                 buf_now[ival * 4 + 3] = 2;
             }
 
-            const uint16_t crc = crc16_itu_t(0, buf_now, 512);
             if (iblock) spi_send_sd_block_finish();
-            spi_send_sd_block_start(buf_now, crc, ERASE_CYCLE_SIZE);
+            spi_send_sd_block_start(buf_now, ERASE_CYCLE_SIZE);
         }
 
         spi_send_sd_block_finish();

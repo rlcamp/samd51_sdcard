@@ -149,7 +149,6 @@ static volatile char waiting_while_card_busy;
 static unsigned char card_busy_result;
 
 static volatile char waiting_while_card_write;
-static uint16_t pending_crc;
 static unsigned char card_write_response;
 
 void spi_wait_while_card_busy_nonblocking_wait(void) {
@@ -213,12 +212,15 @@ void DMAC_1_Handler(void) {
     busy = 0;
 
     if (waiting_while_card_write) {
+        /* grab the CRC that the DMAC calculated on the outgoing 512 bytes... */
+        while (DMAC->CRCSTATUS.bit.CRCBUSY);
+        const uint16_t crc = DMAC->CRCCHKSUM.reg;
+
         /* blocking send of crc */
-        /* TODO: the samd51 DMAC can supposedly calculate this itself, use that if so */
         while (!SERCOM1->SPI.INTFLAG.bit.DRE);
-        SERCOM1->SPI.DATA.bit.DATA = (pending_crc << 8U) & 0xff;
+        SERCOM1->SPI.DATA.bit.DATA = (crc << 8U) & 0xff;
         while (!SERCOM1->SPI.INTFLAG.bit.DRE);
-        SERCOM1->SPI.DATA.bit.DATA = (pending_crc) & 0xff;
+        SERCOM1->SPI.DATA.bit.DATA = (crc) & 0xff;
 
         /* wait for crc to complete sending before enabling rx */
         while (!SERCOM1->SPI.INTFLAG.bit.TXC);
@@ -323,6 +325,11 @@ static void spi_send_nonblocking_start(const void * buf, const size_t count) {
     /* enable interrupt on write completion */
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTENSET.bit.TCMPL = 1;
 
+    /* reset the crc */
+    DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0 }.reg;
+    DMAC->CRCCHKSUM.reg = 0;
+    DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0x21 }.reg;
+
     busy = 1;
 
     /* ensure changes to descriptors have propagated to sram prior to enabling peripheral */
@@ -347,14 +354,13 @@ int spi_send_sd_block_finish(void) {
     return response != 0xE5 ? -1 : 0;
 }
 
-void spi_send_sd_block_start(const void * buf, const uint16_t crc, const size_t size_total) {
+void spi_send_sd_block_start(const void * buf, const size_t size_total) {
     SERCOM1->SPI.CTRLB.bit.RXEN = 0;
     while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
 
     while (!SERCOM1->SPI.INTFLAG.bit.DRE);
     SERCOM1->SPI.DATA.bit.DATA = (size_total / 512) > 1 ? 0xfc : 0xfe;
 
-    pending_crc = crc;
     waiting_while_card_write = 1;
 
     spi_send_nonblocking_start(buf, 512);
