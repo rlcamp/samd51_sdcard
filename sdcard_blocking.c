@@ -76,36 +76,6 @@ static int rx_data_block(unsigned char * buf) {
     return 0;
 }
 
-void spi_sd_cmd58(void) {
-    while (1) {
-        fprintf(stderr, "%s: sending cmd58\n", __func__);
-
-        cs_low();
-        wait_for_card_ready();
-
-        const uint8_t cmd58_r1_response = command_and_r1_response(58, 0);
-
-        fprintf(stderr, "%s: cmd58_r1_response: 0x%2.2X\n", __func__, cmd58_r1_response);
-
-        if (cmd58_r1_response > 1) {
-            cs_high();
-
-            continue;
-        }
-
-        const unsigned int ocr = spi_receive_uint32();
-
-        cs_high();
-
-        fprintf(stderr, "%s: cmd58 response: 0x%8.8X\n", __func__, ocr);
-
-        if (ocr & (1U << 30))
-            fprintf(stderr, "%s: bit 30 is set\n", __func__);
-
-        break;
-    }
-}
-
 void spi_sd_init(void) {
     cs_init();
 
@@ -181,7 +151,31 @@ void spi_sd_init(void) {
         if (!acmd41_r1_response) break;
     }
 
-    spi_sd_cmd58();
+    while (1) {
+        fprintf(stderr, "%s: sending cmd58\n", __func__);
+
+        cs_low();
+        wait_for_card_ready();
+
+        const uint8_t cmd58_r1_response = command_and_r1_response(58, 0);
+
+        if (cmd58_r1_response > 1) {
+            cs_high();
+
+            continue;
+        }
+
+        const unsigned int ocr = spi_receive_uint32();
+
+        cs_high();
+
+        fprintf(stderr, "%s: cmd58 response: 0x%8.8X\n", __func__, ocr);
+
+        if (ocr & (1U << 30))
+            fprintf(stderr, "%s: bit 30 is set\n", __func__);
+
+        break;
+    }
 
     /* cmd16 */
     while (1) {
@@ -259,8 +253,6 @@ int spi_sd_write_data_start(unsigned long size, unsigned long address) {
 
             cs_high();
 
-            fprintf(stderr, "%s: acmd23_r1_response: 0x%2.2X\n", __func__, acmd23_r1_response);
-
             if (!acmd23_r1_response) break;
         }
 
@@ -298,10 +290,7 @@ int spi_sd_write_data(unsigned char * buf, const unsigned long size, const unsig
 
     for (unsigned char * stop = buf + size; buf < stop; buf += 512) {
         spi_send_sd_block_start(buf, size);
-        if (-1 == spi_send_sd_block_finish()) {
-            fprintf(stderr, "%s(%d): got here\n", __func__, __LINE__);
-            return -1;
-        }
+        if (-1 == spi_send_sd_block_finish()) return -1;
     }
     spi_sd_write_data_end(size);
 
