@@ -174,7 +174,7 @@ static unsigned char card_busy_result;
 /* used only for determining which ancillary traffic to send before/after blocks */
 static volatile size_t blocks_total_in_transaction;
 
-static const unsigned char * volatile card_write_cursor, * volatile card_write_cursor_stop;
+static const unsigned char * card_write_cursor, * card_write_cursor_stop;
 static volatile char waiting_while_card_write;
 static unsigned char card_write_response;
 
