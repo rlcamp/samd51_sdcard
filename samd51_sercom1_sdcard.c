@@ -1,7 +1,6 @@
 #include "samd51_sercom1_sdcard.h"
 #include <samd.h>
 #include <assert.h>
-#include <stdio.h>
 
 #define BAUD_RATE_SLOW 250000
 #define BAUD_RATE_FAST 24000000
@@ -218,10 +217,6 @@ void spi_send_sd_block_start(const void * buf) {
     spi_send_nonblocking_start(buf, 512);
 }
 
-static void spi_wait_while_card_busy_nonblocking_wait(void) {
-    while (waiting_while_card_busy) __WFI();
-}
-
 static void spi_wait_while_card_busy_nonblocking_start(void) {
     SERCOM1->SPI.CTRLB.bit.RXEN = 1;
     while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
@@ -366,8 +361,7 @@ int spi_send_sd_blocks_finish(void) {
     while (busy || waiting_while_card_busy) __WFI();
 
     uint16_t response = card_write_response;
-    if (response != 0xE5)
-        fprintf(stderr, "%s(%d): response 0x%2.2X\n", __func__, __LINE__, response);
+//    if (response != 0xE5) fprintf(stderr, "%s(%d): response 0x%2.2X\n", __func__, __LINE__, response);
 
     return response != 0xE5 ? -1 : 0;
 }
@@ -457,9 +451,9 @@ static int rx_data_block(unsigned char * buf) {
     /* read and discard two crc bytes */
     unsigned char crcbuf[2];
     spi_receive(crcbuf, 2);
-    const uint16_t crc = crcbuf[0] << 8 | crcbuf[1];
+//    const uint16_t crc = crcbuf[0] << 8 | crcbuf[1];
 
-    if (0) fprintf(stderr, "%s: 0x%4.4X\n", __func__, crc);
+//    fprintf(stderr, "%s: 0x%4.4X\n", __func__, crc);
     return 0;
 }
 
@@ -482,16 +476,14 @@ void spi_sd_init(void) {
 
         /* send cmd0 */
         const uint8_t cmd0_r1_response = command_and_r1_response(0, 0);
-
         cs_high();
 
-        fprintf(stderr, "%s: cmd0_r1_response: 0x%2.2X\n", __func__, cmd0_r1_response);
+//        fprintf(stderr, "%s: cmd0_r1_response: 0x%2.2X\n", __func__, cmd0_r1_response);
         if (0x01 == cmd0_r1_response) break;
     }
 
     /* cmd8 */
     while (1) {
-        fprintf(stderr, "%s: sending cmd8\n", __func__);
         cs_low();
         wait_for_card_ready();
 
@@ -503,11 +495,9 @@ void spi_sd_init(void) {
         }
 
         const uint32_t response = spi_receive_uint32();
-
         cs_high();
 
-        fprintf(stderr, "%s: cmd8 response: 0x%8.8X\n", __func__, (unsigned int)response);
-
+//        fprintf(stderr, "%s: cmd8 response: 0x%8.8X\n", __func__, (unsigned int)response);
         if (0x1AA == response) break;
     }
 
@@ -517,30 +507,22 @@ void spi_sd_init(void) {
         wait_for_card_ready();
 
         const uint8_t cmd55_r1_response = command_and_r1_response(55, 0);
-
         cs_high();
-
-        fprintf(stderr, "%s: cmd55_r1_response: 0x%2.2X\n", __func__, cmd55_r1_response);
 
         if (cmd55_r1_response > 1) continue;
 
-        fprintf(stderr, "%s: sending acmd41\n", __func__);
-
+//        fprintf(stderr, "%s: sending acmd41\n", __func__);
         cs_low();
         wait_for_card_ready();
 
         const uint8_t acmd41_r1_response = command_and_r1_response(41, 1U << 30);
-
         cs_high();
 
-        fprintf(stderr, "%s: acmd41_r1_response: 0x%2.2X\n", __func__, acmd41_r1_response);
-
+//        fprintf(stderr, "%s: acmd41_r1_response: 0x%2.2X\n", __func__, acmd41_r1_response);
         if (!acmd41_r1_response) break;
     }
 
     while (1) {
-        fprintf(stderr, "%s: sending cmd58\n", __func__);
-
         cs_low();
         wait_for_card_ready();
 
@@ -553,35 +535,31 @@ void spi_sd_init(void) {
         }
 
         const unsigned int ocr = spi_receive_uint32();
-
+        (void)ocr;
         cs_high();
 
-        fprintf(stderr, "%s: cmd58 response: 0x%8.8X\n", __func__, ocr);
-
-        if (ocr & (1U << 30))
-            fprintf(stderr, "%s: bit 30 is set\n", __func__);
+//        fprintf(stderr, "%s: cmd58 response: 0x%8.8X\n", __func__, ocr);
+//        if (ocr & (1U << 30)) fprintf(stderr, "%s: bit 30 is set\n", __func__);
 
         break;
     }
 
     /* cmd16 */
     while (1) {
-        fprintf(stderr, "%s: sending cmd16\n", __func__);
+//        fprintf(stderr, "%s: sending cmd16\n", __func__);
         cs_low();
         wait_for_card_ready();
 
         const uint8_t r1_response = command_and_r1_response(16, 512);
-
         cs_high();
 
-        fprintf(stderr, "%s: cmd16 response: 0x%2.2X\n", __func__, r1_response);
+//        fprintf(stderr, "%s: cmd16 response: 0x%2.2X\n", __func__, r1_response);
         if (r1_response <= 1) break;
     }
 
 #if 1
     /* cmd59 */
     while (1) {
-        fprintf(stderr, "%s: sending cmd59\n", __func__);
         cs_low();
         wait_for_card_ready();
 
@@ -589,7 +567,7 @@ void spi_sd_init(void) {
 
         cs_high();
 
-        fprintf(stderr, "%s: cmd59 response: 0x%2.2X\n", __func__, r1_response);
+//        fprintf(stderr, "%s: cmd59 response: 0x%2.2X\n", __func__, r1_response);
         if (r1_response <= 1) break;
     }
 #endif
@@ -670,10 +648,8 @@ void spi_sd_write_data_end(void) {
 
 int spi_sd_write_data(unsigned char * buf, const unsigned long size, const unsigned long long address) {
     /* note that address and size must be multiples of 512 */
-    if (-1 == spi_sd_write_data_start(size, address)) {
-        fprintf(stderr, "%s(%d): got here\n", __func__, __LINE__);
+    if (-1 == spi_sd_write_data_start(size, address))
         return -1;
-    }
 
     spi_send_sd_blocks_start(buf, size);
 
