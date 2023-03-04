@@ -60,6 +60,27 @@ static void spi_dma_init(void) {
     DMAC->Channel[ICHANNEL_SPI_READ].CHCTRLA.bit.TRIGSRC = 0x06; /* trigger when sercom1 has received one new byte */
     DMAC->Channel[ICHANNEL_SPI_READ].CHCTRLA.bit.TRIGACT = DMAC_CHCTRLA_TRIGACT_BURST_Val; /* transfer one byte when triggered */
     DMAC->Channel[ICHANNEL_SPI_READ].CHCTRLA.bit.BURSTLEN = DMAC_CHCTRLA_BURSTLEN_SINGLE_Val; /* one burst = one beat */
+
+    /* initialize unchanging properties of write descriptor */
+    *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + ICHANNEL_SPI_WRITE) = (DmacDescriptor) {
+        .DSTADDR.reg = (size_t)&(SERCOM1->SPI.DATA.reg),
+        .BTCTRL = {
+            .bit.VALID = 1,
+            .bit.DSTINC = 0, /* write to the same register every time */
+        }
+    };
+
+    /* initialize unchanging properties of write descriptor */
+    *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + ICHANNEL_SPI_READ) = (DmacDescriptor) {
+        .SRCADDR.reg = (size_t)&(SERCOM1->SPI.DATA.reg),
+        .BTCTRL = {
+            .bit.VALID = 1,
+            .bit.SRCINC = 0, /* read from the same register every time */
+            .bit.BLOCKACT = DMAC_BTCTRL_BLOCKACT_INT_Val, /* fire an interrupt */
+        }
+    };
+
+    __DSB();
 }
 
 void cs_init(void) {
@@ -161,29 +182,16 @@ static void spi_wait_while_card_busy_nonblocking_start(void) {
 
     /* TODO: almost all of this descriptor reconfig can usually be skipped */
     static const unsigned char all_ones = 0xff;
-    *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + ICHANNEL_SPI_WRITE) = (DmacDescriptor) {
-        .BTCNT.reg = CARD_BUSY_BYTES_PER_CHECK,
-        .SRCADDR.reg = (size_t)&all_ones,
-        .DSTADDR.reg = (size_t)&(SERCOM1->SPI.DATA.reg),
-        .BTCTRL = {
-            .bit.VALID = 1,
-            .bit.SRCINC = 0, /* read from the same value every time */
-            .bit.DSTINC = 0, /* write to the same register every time */
-            .bit.BLOCKACT = DMAC_BTCTRL_BLOCKACT_NOACT_Val, /* do not fire an interrupt */
-        }
-    };
+    DmacDescriptor * descriptor_write = ((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + ICHANNEL_SPI_WRITE;
+    descriptor_write->BTCNT.reg = CARD_BUSY_BYTES_PER_CHECK;
+    descriptor_write->SRCADDR.reg = (size_t)&all_ones;
+    descriptor_write->BTCTRL.bit.SRCINC = 0;
+    descriptor_write->BTCTRL.bit.BLOCKACT = DMAC_BTCTRL_BLOCKACT_NOACT_Val;
 
-    *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + ICHANNEL_SPI_READ) = (DmacDescriptor) {
-        .BTCNT.reg = CARD_BUSY_BYTES_PER_CHECK, /* number of beats in transaction, where one beat is one byte */
-        .SRCADDR.reg = (size_t)&(SERCOM1->SPI.DATA.reg),
-        .DSTADDR.reg = (size_t)&card_busy_result,
-        .BTCTRL = {
-            .bit.VALID = 1,
-            .bit.SRCINC = 0, /* read from the same register every time */
-            .bit.DSTINC = 0, /* read to the same byte every time */
-            .bit.BLOCKACT = DMAC_BTCTRL_BLOCKACT_INT_Val, /* fire an interrupt */
-        }
-    };
+    DmacDescriptor * descriptor_read = ((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + ICHANNEL_SPI_READ;
+    descriptor_read->BTCNT.reg = CARD_BUSY_BYTES_PER_CHECK;
+    descriptor_read->DSTADDR.reg = (size_t)&card_busy_result;
+    descriptor_read->BTCTRL.bit.DSTINC = 0; /* read to the same byte every time */
 
     /* clear prior interrupt flags */
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
@@ -265,29 +273,16 @@ static void spi_receive_nonblocking_start(void * buf, const size_t count) {
     while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
 
     static const unsigned char all_ones = 0xff;
-    *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + ICHANNEL_SPI_WRITE) = (DmacDescriptor) {
-        .BTCNT.reg = count,
-        .SRCADDR.reg = (size_t)&all_ones,
-        .DSTADDR.reg = (size_t)&(SERCOM1->SPI.DATA.reg),
-        .BTCTRL = {
-            .bit.VALID = 1,
-            .bit.SRCINC = 0, /* read from the same value every time */
-            .bit.DSTINC = 0, /* write to the same register every time */
-            .bit.BLOCKACT = DMAC_BTCTRL_BLOCKACT_NOACT_Val, /* do not fire an interrupt */
-        }
-    };
+    DmacDescriptor * descriptor_write = ((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + ICHANNEL_SPI_WRITE;
+    descriptor_write->BTCNT.reg = count;
+    descriptor_write->SRCADDR.reg = (size_t)&all_ones;
+    descriptor_write->BTCTRL.bit.SRCINC = 0;
+    descriptor_write->BTCTRL.bit.BLOCKACT = DMAC_BTCTRL_BLOCKACT_NOACT_Val;
 
-    *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + ICHANNEL_SPI_READ) = (DmacDescriptor) {
-        .BTCNT.reg = count, /* number of beats in transaction, where one beat is one byte */
-        .SRCADDR.reg = (size_t)&(SERCOM1->SPI.DATA.reg),
-        .DSTADDR.reg = ((size_t)buf) + count,
-        .BTCTRL = {
-            .bit.VALID = 1,
-            .bit.SRCINC = 0, /* read from the same register every time */
-            .bit.DSTINC = 1, /* increment destination register after every byte */
-            .bit.BLOCKACT = DMAC_BTCTRL_BLOCKACT_INT_Val, /* fire an interrupt */
-        }
-    };
+    DmacDescriptor * descriptor_read = ((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + ICHANNEL_SPI_READ;
+    descriptor_read->BTCNT.reg = count;
+    descriptor_read->DSTADDR.reg = ((size_t)buf) + count,
+    descriptor_read->BTCTRL.bit.DSTINC = 1; /* read to the same byte every time */
 
     /* clear prior interrupt flags */
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
@@ -310,17 +305,11 @@ static void spi_receive_nonblocking_start(void * buf, const size_t count) {
 }
 
 static void spi_send_nonblocking_start(const void * buf, const size_t count) {
-    *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + ICHANNEL_SPI_WRITE) = (DmacDescriptor) {
-        .BTCNT.reg = count,
-        .SRCADDR.reg = ((size_t)buf) + count,
-        .DSTADDR.reg = (size_t)&(SERCOM1->SPI.DATA.reg),
-        .BTCTRL = {
-            .bit.VALID = 1,
-            .bit.SRCINC = 1, /* inc from (srcaddr.reg - count) to (srcadddr.reg - 1) inclusive */
-            .bit.DSTINC = 0, /* write to the same register every time */
-            .bit.BLOCKACT = DMAC_BTCTRL_BLOCKACT_INT_Val, /* fire an interrupt after every block */
-        }
-    };
+    DmacDescriptor * descriptor_write = ((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + ICHANNEL_SPI_WRITE;
+    descriptor_write->BTCNT.reg = count;
+    descriptor_write->SRCADDR.reg = ((size_t)buf) + count;
+    descriptor_write->BTCTRL.bit.SRCINC = 1;
+    descriptor_write->BTCTRL.bit.BLOCKACT = DMAC_BTCTRL_BLOCKACT_INT_Val;
 
     /* clear pending interrupt from before */
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
