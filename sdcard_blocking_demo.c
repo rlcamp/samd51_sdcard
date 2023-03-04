@@ -98,6 +98,9 @@ void setup() {
 
         printf("%s: %lu ns mean per 512 bytes, %lu kB/s\n", __func__, (unsigned long)((elapsed * 1000000ULL + blocks / 2) / blocks), ((blocks * 512 * 1000) / 1024 + elapsed / 2) / elapsed);
     }
+
+    /* just reset and wait for another connection */
+    NVIC_SystemReset();
 }
 
 void loop() {
