@@ -1,8 +1,7 @@
 #include <Arduino.h>
 #include <stdio.h>
 
-#include "sdcard_blocking.h"
-#include "spi.h"
+#include "samd51_sercom1_sdcard.h"
 
 void printf_block_of_hex(const unsigned char * data, const size_t size) {
     for (const unsigned char * line = data; line < data + size; line += 32) {
