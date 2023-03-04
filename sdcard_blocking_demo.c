@@ -67,38 +67,44 @@ void setup() {
 
     char error = 0;
 #define ERASE_CYCLE_SIZE 4194304
-#define WRITE_SIZE 2048
+#define CHUNK_SIZE 2048
 
     for (size_t iaddress = 0; iaddress < ERASE_CYCLE_SIZE * 8; iaddress += ERASE_CYCLE_SIZE) {
-        const size_t writes = ERASE_CYCLE_SIZE / WRITE_SIZE;
+        const size_t chunks = ERASE_CYCLE_SIZE / CHUNK_SIZE;
         const unsigned long millis_first = millis();
 
+        /* this is called once to begin the entire 4 MB transaction, as seen by the card */
         spi_sd_write_data_start(ERASE_CYCLE_SIZE, iaddress);
 
-        for (size_t iwrite = 0; iwrite < writes; iwrite++) {
-
-            unsigned char * restrict const buf_now = bufs[iwrite % 2];
-            for (size_t ival = 0; ival < WRITE_SIZE / sizeof(uint16_t); ival++)
+        /* loop over the 4 MB erase cycle in 2 kB chunks */
+        for (size_t ichunk = 0; ichunk < chunks; ichunk++) {
+            /* fill the current 2048-byte chunk with something, while the previous chunk is written */
+            unsigned char * restrict const buf_now = bufs[ichunk % 2];
+            for (size_t ival = 0; ival < CHUNK_SIZE / sizeof(uint16_t); ival++)
                 memcpy(buf_now + 2 * ival, &(uint16_t) { ival }, sizeof(uint16_t));
-            memcpy(buf_now, &(uint32_t) { iaddress + WRITE_SIZE * iwrite }, sizeof(uint32_t));
+            memcpy(buf_now, &(uint32_t) { iaddress + CHUNK_SIZE * ichunk }, sizeof(uint32_t));
 
-            if (iwrite && -1 == spi_send_sd_blocks_finish()) {
+            /* if not the first batch, wait for the previous batch to finish */
+            if (ichunk && -1 == spi_send_sd_blocks_finish()) {
                 error = 1;
                 fprintf(stderr, "%s: error\n", __func__);
                 break;
             }
-            spi_send_sd_blocks_start(buf_now, WRITE_SIZE);
+
+            /* this returns more or less immediately */
+            spi_send_sd_blocks_start(buf_now, CHUNK_SIZE);
         }
 
         if (error) break;
 
+        /* wait for the last 2 kB chunk to finish */
         spi_send_sd_blocks_finish();
 
+        /* tell the card we have successfully reached the end of the 4 MB transaction */
         spi_sd_write_data_end();
 
         const unsigned long elapsed = millis() - millis_first;
-
-        printf("%s: %lu ns mean per 2048 bytes, %lu kB/s\n", __func__, (unsigned long)((elapsed * 1000000ULL + writes / 2) / writes), ((writes * WRITE_SIZE * 1000) / 1024 + elapsed / 2) / elapsed);
+        printf("%s: %lu ns mean per %u bytes, %lu kB/s\n", __func__, (unsigned long)((elapsed * 1000000ULL + chunks / 2) / chunks), CHUNK_SIZE, ((chunks * CHUNK_SIZE * 1000) / 1024 + elapsed / 2) / elapsed);
     }
 
     /* just reset and wait for another connection */
