@@ -172,6 +172,9 @@ static volatile char busy = 0;
 static volatile char waiting_while_card_busy;
 static unsigned char card_busy_result;
 
+/* used only for determining which ancillary traffic to send before/after blocks */
+static volatile size_t blocks_total_in_transaction;
+
 static volatile char waiting_while_card_write;
 static unsigned char card_write_response;
 
@@ -349,12 +352,12 @@ int spi_send_sd_block_finish(void) {
     return response != 0xE5 ? -1 : 0;
 }
 
-void spi_send_sd_block_start(const void * buf, const size_t size_total) {
+void spi_send_sd_block_start(const void * buf) {
     SERCOM1->SPI.CTRLB.bit.RXEN = 0;
     while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
 
     while (!SERCOM1->SPI.INTFLAG.bit.DRE);
-    SERCOM1->SPI.DATA.bit.DATA = (size_total / 512) > 1 ? 0xfc : 0xfe;
+    SERCOM1->SPI.DATA.bit.DATA = blocks_total_in_transaction > 1 ? 0xfc : 0xfe;
 
     waiting_while_card_write = 1;
 
@@ -603,6 +606,7 @@ int spi_sd_read_data(unsigned char * buf, unsigned long size, unsigned long addr
 
 int spi_sd_write_data_start(unsigned long size, unsigned long address) {
     const size_t blocks = size / 512;
+    blocks_total_in_transaction = blocks;
 
     if (blocks > 1)
         while (1) {
@@ -640,10 +644,9 @@ int spi_sd_write_data_start(unsigned long size, unsigned long address) {
     return 0;
 }
 
-void spi_sd_write_data_end(const size_t size) {
+void spi_sd_write_data_end(void) {
     /* if we sent cmd25, send stop tran token */
-    const size_t blocks = size / 512;
-    if (blocks > 1) spi_send((unsigned char[2]) { 0xfd, 0xff }, 2);
+    if (blocks_total_in_transaction > 1) spi_send((unsigned char[2]) { 0xfd, 0xff }, 2);
 
     wait_for_card_ready();
 
@@ -658,10 +661,10 @@ int spi_sd_write_data(unsigned char * buf, const unsigned long size, const unsig
     }
 
     for (unsigned char * stop = buf + size; buf < stop; buf += 512) {
-        spi_send_sd_block_start(buf, size);
+        spi_send_sd_block_start(buf);
         if (-1 == spi_send_sd_block_finish()) return -1;
     }
-    spi_sd_write_data_end(size);
+    spi_sd_write_data_end();
 
     return 0;
 }

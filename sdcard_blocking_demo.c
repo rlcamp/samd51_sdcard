@@ -84,14 +84,14 @@ void setup() {
                     error = 1;
                     break;
                 }
-            spi_send_sd_block_start(buf_now, ERASE_CYCLE_SIZE);
+            spi_send_sd_block_start(buf_now);
         }
 
         if (error) break;
 
         spi_send_sd_block_finish();
 
-        spi_sd_write_data_end(ERASE_CYCLE_SIZE);
+        spi_sd_write_data_end();
 
         const unsigned long elapsed = millis() - millis_first;
 
