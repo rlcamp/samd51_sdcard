@@ -86,22 +86,22 @@ static void spi_dma_init(void) {
     __DSB();
 }
 
-void cs_init(void) {
+static void cs_init(void) {
     /* configure pin PA14 (arduino pin D4 on the feather m4) as output for cs pin */
     PORT->Group[0].OUTSET.reg = 1U << 14;
     PORT->Group[0].PINCFG[14].reg = 0;
     PORT->Group[0].DIRSET.reg = 1U << 14;
 }
 
-void cs_high(void) {
+static void cs_high(void) {
     PORT->Group[0].OUTSET.reg = 1U << 14;
 }
 
-void cs_low(void) {
+static void cs_low(void) {
     PORT->Group[0].OUTCLR.reg = 1U << 14;
 }
 
-void spi_change_baud_rate(unsigned long baudrate) {
+static void spi_change_baud_rate(unsigned long baudrate) {
     SERCOM1->SPI.CTRLA.bit.ENABLE = 0;
     while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
 
@@ -111,7 +111,7 @@ void spi_change_baud_rate(unsigned long baudrate) {
     while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
 }
 
-void spi_init(unsigned long baudrate) {
+static void spi_init(unsigned long baudrate) {
     /* sercom1 pad 2 is miso, pad 1 is sck, pad 3 is mosi. hw cs is not used */
 
     /* configure pin PA17 ("SCK" on feather m4) to use functionality C (sercom1 pad 1), drive strength 1, for sck */
@@ -175,7 +175,7 @@ static unsigned char card_busy_result;
 static volatile char waiting_while_card_write;
 static unsigned char card_write_response;
 
-void spi_wait_while_card_busy_nonblocking_wait(void) {
+static void spi_wait_while_card_busy_nonblocking_wait(void) {
     while (waiting_while_card_busy) __WFI();
 }
 
@@ -361,16 +361,16 @@ void spi_send_sd_block_start(const void * buf, const size_t size_total) {
     spi_send_nonblocking_start(buf, 512);
 }
 
-void spi_receive_nonblocking_wait(void) {
+static void spi_receive_nonblocking_wait(void) {
     while (busy) __WFI();
 }
 
-void spi_receive(void * buf, const size_t size) {
+static void spi_receive(void * buf, const size_t size) {
     spi_receive_nonblocking_start(buf, size);
     spi_receive_nonblocking_wait();
 }
 
-void spi_send(const void * buf, const size_t size) {
+static void spi_send(const void * buf, const size_t size) {
     SERCOM1->SPI.CTRLB.bit.RXEN = 0;
     while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
 
