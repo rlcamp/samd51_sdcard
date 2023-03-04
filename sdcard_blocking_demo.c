@@ -11,12 +11,15 @@ void printf_block_of_hex(const unsigned char * data, const size_t size) {
     }
 }
 
+static unsigned char bufs[2][2048];
+
 void setup() {
     printf("\nhello\n");
 
     spi_sd_init();
 
-    unsigned char buf[1024];
+  static unsigned char buf[1024];
+
     printf("block 0:\n");
     spi_sd_read_data(buf, 512, 0);
     printf_block_of_hex(buf, 512);
@@ -39,6 +42,7 @@ void setup() {
     printf("\n");
 
 #if 1
+
     buf[1023] = 0x41;
 
     printf("writing:\n");
@@ -63,39 +67,38 @@ void setup() {
 
     char error = 0;
 #define ERASE_CYCLE_SIZE 4194304
+#define WRITE_SIZE 2048
+
     for (size_t iaddress = 0; iaddress < ERASE_CYCLE_SIZE * 8; iaddress += ERASE_CYCLE_SIZE) {
-        const size_t blocks = ERASE_CYCLE_SIZE / 512;
+        const size_t writes = ERASE_CYCLE_SIZE / WRITE_SIZE;
         const unsigned long millis_first = millis();
 
         spi_sd_write_data_start(ERASE_CYCLE_SIZE, iaddress);
 
-        for (size_t iblock = 0; iblock < blocks; iblock++) {
-            unsigned char * restrict const buf_now = buf + 512 * (iblock % 2);
+        for (size_t iwrite = 0; iwrite < writes; iwrite++) {
 
-            for (size_t ival = 0; ival < 128; ival++) {
-                buf_now[ival * 4 + 0] = ival;
-                buf_now[ival * 4 + 1] = 0;
-                buf_now[ival * 4 + 2] = 1;
-                buf_now[ival * 4 + 3] = 2;
+            unsigned char * restrict const buf_now = bufs[iwrite % 2];
+            for (size_t ival = 0; ival < WRITE_SIZE / sizeof(uint16_t); ival++)
+                memcpy(buf_now + 2 * ival, &(uint16_t) { ival }, sizeof(uint16_t));
+            memcpy(buf_now, &(uint32_t) { iaddress + WRITE_SIZE * iwrite }, sizeof(uint32_t));
+
+            if (iwrite && -1 == spi_send_sd_blocks_finish()) {
+                error = 1;
+                fprintf(stderr, "%s: error\n", __func__);
+                break;
             }
-
-            if (iblock)
-                if (-1 == spi_send_sd_block_finish()) {
-                    error = 1;
-                    break;
-                }
-            spi_send_sd_block_start(buf_now);
+            spi_send_sd_blocks_start(buf_now, WRITE_SIZE);
         }
 
         if (error) break;
 
-        spi_send_sd_block_finish();
+        spi_send_sd_blocks_finish();
 
         spi_sd_write_data_end();
 
         const unsigned long elapsed = millis() - millis_first;
 
-        printf("%s: %lu ns mean per 512 bytes, %lu kB/s\n", __func__, (unsigned long)((elapsed * 1000000ULL + blocks / 2) / blocks), ((blocks * 512 * 1000) / 1024 + elapsed / 2) / elapsed);
+        printf("%s: %lu ns mean per 2048 bytes, %lu kB/s\n", __func__, (unsigned long)((elapsed * 1000000ULL + writes / 2) / writes), ((writes * WRITE_SIZE * 1000) / 1024 + elapsed / 2) / elapsed);
     }
 
     /* just reset and wait for another connection */

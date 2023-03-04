@@ -175,8 +175,48 @@ static unsigned char card_busy_result;
 /* used only for determining which ancillary traffic to send before/after blocks */
 static volatile size_t blocks_total_in_transaction;
 
+static const unsigned char * volatile card_write_cursor, * volatile card_write_cursor_stop;
 static volatile char waiting_while_card_write;
 static unsigned char card_write_response;
+
+static void spi_send_nonblocking_start(const void * buf, const size_t count) {
+    DmacDescriptor * descriptor_write = ((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + ICHANNEL_SPI_WRITE;
+    descriptor_write->BTCNT.reg = count;
+    descriptor_write->SRCADDR.reg = ((size_t)buf) + count;
+    descriptor_write->BTCTRL.bit.SRCINC = 1;
+    descriptor_write->BTCTRL.bit.BLOCKACT = DMAC_BTCTRL_BLOCKACT_INT_Val;
+
+    /* clear pending interrupt from before */
+    DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
+
+    /* enable interrupt on write completion */
+    DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTENSET.bit.TCMPL = 1;
+
+    /* reset the crc */
+    DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0 }.reg;
+    DMAC->CRCCHKSUM.reg = 0;
+    DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0x21 }.reg;
+
+    busy = 1;
+
+    /* ensure changes to descriptors have propagated to sram prior to enabling peripheral */
+    __DSB();
+
+    /* setting this starts the transaction */
+    DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
+}
+
+void spi_send_sd_block_start(const void * buf) {
+    SERCOM1->SPI.CTRLB.bit.RXEN = 0;
+    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+
+    while (!SERCOM1->SPI.INTFLAG.bit.DRE);
+    SERCOM1->SPI.DATA.bit.DATA = blocks_total_in_transaction > 1 ? 0xfc : 0xfe;
+
+    waiting_while_card_write = 1;
+
+    spi_send_nonblocking_start(buf, 512);
+}
 
 static void spi_wait_while_card_busy_nonblocking_wait(void) {
     while (waiting_while_card_busy) __WFI();
@@ -262,8 +302,16 @@ void DMAC_2_Handler(void) {
     busy = 0;
 
     if (waiting_while_card_busy) {
-        if (0xff == card_busy_result)
+        if (0xff == card_busy_result) {
             waiting_while_card_busy = 0;
+
+            if (card_write_cursor) {
+                card_write_cursor += 512;
+                if (card_write_cursor != card_write_cursor_stop)
+                    spi_send_sd_block_start(card_write_cursor);
+                else card_write_cursor = NULL;
+            }
+        }
         else {
             /* need to try again */
             DMAC->Channel[ICHANNEL_SPI_READ].CHCTRLA.bit.ENABLE = 1;
@@ -310,40 +358,12 @@ static void spi_receive_nonblocking_start(void * buf, const size_t count) {
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
 }
 
-static void spi_send_nonblocking_start(const void * buf, const size_t count) {
-    DmacDescriptor * descriptor_write = ((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + ICHANNEL_SPI_WRITE;
-    descriptor_write->BTCNT.reg = count;
-    descriptor_write->SRCADDR.reg = ((size_t)buf) + count;
-    descriptor_write->BTCTRL.bit.SRCINC = 1;
-    descriptor_write->BTCTRL.bit.BLOCKACT = DMAC_BTCTRL_BLOCKACT_INT_Val;
-
-    /* clear pending interrupt from before */
-    DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
-
-    /* enable interrupt on write completion */
-    DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTENSET.bit.TCMPL = 1;
-
-    /* reset the crc */
-    DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0 }.reg;
-    DMAC->CRCCHKSUM.reg = 0;
-    DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0x21 }.reg;
-
-    busy = 1;
-
-    /* ensure changes to descriptors have propagated to sram prior to enabling peripheral */
-    __DSB();
-
-    /* setting this starts the transaction */
-    DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
-}
-
 void spi_send_nonblocking_wait(void) {
     while (busy) __WFI();
 }
 
-int spi_send_sd_block_finish(void) {
-    spi_send_nonblocking_wait();
-    spi_wait_while_card_busy_nonblocking_wait();
+int spi_send_sd_blocks_finish(void) {
+    while (busy || waiting_while_card_busy) __WFI();
 
     uint16_t response = card_write_response;
     if (response != 0xE5)
@@ -352,16 +372,11 @@ int spi_send_sd_block_finish(void) {
     return response != 0xE5 ? -1 : 0;
 }
 
-void spi_send_sd_block_start(const void * buf) {
-    SERCOM1->SPI.CTRLB.bit.RXEN = 0;
-    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+void spi_send_sd_blocks_start(const void * buf, const size_t size) {
+    card_write_cursor = buf;
+    card_write_cursor_stop = buf + size;
 
-    while (!SERCOM1->SPI.INTFLAG.bit.DRE);
-    SERCOM1->SPI.DATA.bit.DATA = blocks_total_in_transaction > 1 ? 0xfc : 0xfe;
-
-    waiting_while_card_write = 1;
-
-    spi_send_nonblocking_start(buf, 512);
+    spi_send_sd_block_start(buf);
 }
 
 static void spi_receive_nonblocking_wait(void) {
@@ -660,10 +675,9 @@ int spi_sd_write_data(unsigned char * buf, const unsigned long size, const unsig
         return -1;
     }
 
-    for (unsigned char * stop = buf + size; buf < stop; buf += 512) {
-        spi_send_sd_block_start(buf);
-        if (-1 == spi_send_sd_block_finish()) return -1;
-    }
+    spi_send_sd_blocks_start(buf, size);
+
+    if (-1 == spi_send_sd_blocks_finish()) return -1;
     spi_sd_write_data_end();
 
     return 0;
