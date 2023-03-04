@@ -580,7 +580,7 @@ void spi_sd_init(void) {
 #endif
 }
 
-int spi_sd_read_data(unsigned char * buf, unsigned long size, unsigned long address) {
+int spi_sd_read_data(unsigned char * buf, unsigned long size, unsigned long long address) {
     /* note that address must be a multiple of 512 */
     const size_t blocks = size / 512;
 
@@ -604,7 +604,7 @@ int spi_sd_read_data(unsigned char * buf, unsigned long size, unsigned long addr
     return 0;
 }
 
-int spi_sd_write_data_start(unsigned long size, unsigned long address) {
+int spi_sd_write_data_start(unsigned long size, unsigned long long address) {
     const size_t blocks = size / 512;
     blocks_total_in_transaction = blocks;
 
@@ -653,7 +653,7 @@ void spi_sd_write_data_end(void) {
     cs_high();
 }
 
-int spi_sd_write_data(unsigned char * buf, const unsigned long size, const unsigned long address) {
+int spi_sd_write_data(unsigned char * buf, const unsigned long size, const unsigned long long address) {
     /* note that address and size must be multiples of 512 */
     if (-1 == spi_sd_write_data_start(size, address)) {
         fprintf(stderr, "%s(%d): got here\n", __func__, __LINE__);
