@@ -15,7 +15,7 @@ int _write(int file, char * buf, int bytes) {
     static char initted = 0;
     if (!initted) {
         Serial.begin(9600);
-        while (!Serial);
+        while (!Serial) __WFI();
         initted = 1;
     }
 

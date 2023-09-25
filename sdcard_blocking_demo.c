@@ -17,6 +17,7 @@ void setup() {
     printf("\nhello\n");
 
     spi_sd_init();
+    printf("card initted\n");
 
   static unsigned char buf[1024];
 
@@ -46,7 +47,10 @@ void setup() {
     buf[1023] = 0x41;
 
     printf("writing:\n");
-    spi_sd_write_data(buf, 1024, 0);
+    if (-1 == spi_sd_write_data(buf, 1024, 0)) {
+        printf("writing returned error\n");
+        return;
+    }
 
     memset(buf, 0, sizeof(buf));
 
@@ -68,8 +72,10 @@ void setup() {
     char error = 0;
 #define ERASE_CYCLE_SIZE 4194304
 #define CHUNK_SIZE 2048
+#define MICROS_PER_CHUNK 5333U
 
-    for (size_t iaddress = 0; iaddress < ERASE_CYCLE_SIZE * 8; iaddress += ERASE_CYCLE_SIZE) {
+    unsigned long micros_prev = micros();
+    for (size_t iaddress = 0; iaddress < ERASE_CYCLE_SIZE * 32; iaddress += ERASE_CYCLE_SIZE) {
         const size_t chunks = ERASE_CYCLE_SIZE / CHUNK_SIZE;
         const unsigned long millis_first = millis();
 
@@ -91,6 +97,10 @@ void setup() {
                 break;
             }
 
+            if (MICROS_PER_CHUNK) {
+                while (micros() - micros_prev < MICROS_PER_CHUNK) __WFI();
+                micros_prev += MICROS_PER_CHUNK;
+            }
             /* this returns more or less immediately */
             spi_send_sd_blocks_start(buf_now, CHUNK_SIZE);
         }
