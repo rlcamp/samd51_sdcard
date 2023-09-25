@@ -91,8 +91,10 @@ void setup() {
         const size_t chunks = ERASE_CYCLE_SIZE / CHUNK_SIZE;
         const unsigned long millis_first = millis();
 
+        spi_sd_write_pre_erase(ERASE_CYCLE_SIZE / 512);
+
         /* this is called once to begin the entire 4 MB transaction, as seen by the card */
-        spi_sd_write_blocks_start(ERASE_CYCLE_SIZE / 512, iaddress / 512);
+        spi_sd_write_blocks_start(iaddress / 512);
 
         /* loop over the 4 MB erase cycle in 2 kB chunks */
         for (size_t ichunk = 0; ichunk < chunks; ichunk++) {

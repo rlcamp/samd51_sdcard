@@ -169,10 +169,6 @@ static void spi_init(unsigned long baudrate) {
 static volatile char busy = 0;
 static volatile char waiting_while_card_busy;
 static unsigned char card_busy_result;
-
-/* used only for determining which ancillary traffic to send before/after blocks */
-static volatile size_t blocks_total_in_transaction;
-
 static const unsigned char * card_write_cursor, * card_write_cursor_stop;
 static unsigned char card_write_response;
 
@@ -214,7 +210,7 @@ void spi_send_sd_next_block_start(void) {
     while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
 
     while (!SERCOM1->SPI.INTFLAG.bit.DRE);
-    SERCOM1->SPI.DATA.bit.DATA = blocks_total_in_transaction > 1 ? 0xfc : 0xfe;
+    SERCOM1->SPI.DATA.bit.DATA = 1 ? 0xfc : 0xfe;
 
     card_write_cursor += 512;
     spi_send_nonblocking_start(card_write_cursor - 512, 512);
@@ -600,34 +596,33 @@ int spi_sd_read_blocks(void * buf, unsigned long blocks, unsigned long long bloc
     return 0;
 }
 
-int spi_sd_write_blocks_start(unsigned long blocks, unsigned long long block_address) {
-    blocks_total_in_transaction = blocks;
+void spi_sd_write_pre_erase(unsigned long blocks) {
+    while (1) {
+        cs_low();
+        wait_for_card_ready();
 
-    if (blocks > 1)
-        while (1) {
-            cs_low();
-            wait_for_card_ready();
+        const uint8_t cmd55_r1_response = command_and_r1_response(55, 0);
 
-            const uint8_t cmd55_r1_response = command_and_r1_response(55, 0);
+        cs_high();
 
-            cs_high();
+        if (cmd55_r1_response > 1) continue;
 
-            if (cmd55_r1_response > 1) continue;
+        cs_low();
+        wait_for_card_ready();
 
-            cs_low();
-            wait_for_card_ready();
+        const uint8_t acmd23_r1_response = command_and_r1_response(23, blocks);
 
-            const uint8_t acmd23_r1_response = command_and_r1_response(23, blocks);
+        cs_high();
 
-            cs_high();
+        if (!acmd23_r1_response) break;
+    }
+}
 
-            if (!acmd23_r1_response) break;
-        }
-
+int spi_sd_write_blocks_start(unsigned long long block_address) {
     cs_low();
     wait_for_card_ready();
 
-    const uint8_t response = command_and_r1_response(blocks > 1 ? 25 : 24, block_address);
+    const uint8_t response = command_and_r1_response(25, block_address);
     if (response != 0) {
         cs_high();
         return -1;
@@ -641,7 +636,7 @@ int spi_sd_write_blocks_start(unsigned long blocks, unsigned long long block_add
 
 void spi_sd_write_blocks_end(void) {
     /* if we sent cmd25, send stop tran token */
-    if (blocks_total_in_transaction > 1) spi_send((unsigned char[2]) { 0xfd, 0xff }, 2);
+    if (1) spi_send((unsigned char[2]) { 0xfd, 0xff }, 2);
 
     wait_for_card_ready();
 
@@ -649,7 +644,9 @@ void spi_sd_write_blocks_end(void) {
 }
 
 int spi_sd_write_blocks(const void * buf, const unsigned long blocks, const unsigned long long block_address) {
-    if (-1 == spi_sd_write_blocks_start(blocks, block_address))
+    spi_sd_write_pre_erase(blocks);
+
+    if (-1 == spi_sd_write_blocks_start(block_address))
         return -1;
 
     spi_sd_write_more_blocks(buf, blocks);

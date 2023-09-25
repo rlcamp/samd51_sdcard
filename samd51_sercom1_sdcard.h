@@ -9,8 +9,11 @@ void spi_sd_init(void);
 /* blocking...but uses dma internally and will probably expose the nonblocking api if needed */
 int spi_sd_read_blocks(void * buf, unsigned long blocks, unsigned long long block_address);
 
+/* optionally, call this prior to the below, to send ACMD23 */
+void spi_sd_write_pre_erase(unsigned long blocks);
+
 /* initiates a transaction of one or more of the below */
-int spi_sd_write_blocks_start(unsigned long blocks, unsigned long long block_address);
+int spi_sd_write_blocks_start(unsigned long long block_address);
 
 /* non blocking */
 void spi_sd_write_more_blocks(const void * buf, const unsigned long blocks);
