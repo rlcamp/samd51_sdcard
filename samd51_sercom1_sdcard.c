@@ -579,7 +579,7 @@ void spi_sd_init(void) {
 #endif
 }
 
-int spi_sd_read_blocks(unsigned char * buf, unsigned long blocks, unsigned long long block_address) {
+int spi_sd_read_blocks(void * buf, unsigned long blocks, unsigned long long block_address) {
     cs_low();
     wait_for_card_ready();
 
@@ -588,7 +588,7 @@ int spi_sd_read_blocks(unsigned char * buf, unsigned long blocks, unsigned long 
 
     /* clock out the response in 1 + 512 + 2 byte blocks */
     for (size_t iblock = 0; iblock < blocks; iblock++)
-        if (-1 == rx_data_block(buf + 512 * iblock)) {
+        if (-1 == rx_data_block(((unsigned char *)buf) + 512 * iblock)) {
             cs_high();
             return -1;
         }
@@ -648,7 +648,7 @@ void spi_sd_write_blocks_end(void) {
     cs_high();
 }
 
-int spi_sd_write_blocks(unsigned char * buf, const unsigned long blocks, const unsigned long long block_address) {
+int spi_sd_write_blocks(const void * buf, const unsigned long blocks, const unsigned long long block_address) {
     if (-1 == spi_sd_write_blocks_start(blocks, block_address))
         return -1;
 
