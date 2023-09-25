@@ -1,4 +1,4 @@
-SAMD51 SD card logger
+# SAMD51 SD card logger
 
 ### Prerequisites
 
@@ -8,7 +8,7 @@ The board-agnostic glue code between the SAMD51-specific code and the fatfs laye
 
 The example Arduino sketch depends on fatfs and the Arduino ecosystem.
 
-To use this example, clone the repo, drop in ff.c, ff.h, diskio.h, and ffunicode.c from the latest distribution of fatfs, open the dummy empty .ino file in the Arduino IDE, and compile and flash to an Adafruit Feather M4 with a SD card slot breakout wired up to the default SPI pins on the silkscreen (with "D4" used as the chip select pin).
+To use this example, clone the repo, drop in ff.c, ff.h, diskio.h, and ffunicode.c from the latest distribution of [fatfs](http://elm-chan.org/fsw/ff/), open the dummy empty .ino file in the Arduino IDE, and compile and flash to an Adafruit Feather M4 with a SD card slot breakout wired up to the default SPI pins on the silkscreen (with "D4" used as the chip select pin).
 
 ### Caveats
 
