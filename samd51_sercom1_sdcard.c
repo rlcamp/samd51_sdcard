@@ -14,6 +14,9 @@
 
 __attribute__((weak, aligned(16))) SECTION_DMAC_DESCRIPTOR DmacDescriptor dmac_descriptors[8] = { 0 }, dmac_writeback[8] = { 0 };
 
+extern void yield(void);
+__attribute((weak)) void yield(void) { }
+
 static void spi_dma_init(void) {
     /* if dma has not yet been initted... */
     if (!DMAC->BASEADDR.bit.BASEADDR) {
@@ -356,11 +359,11 @@ static void spi_receive_nonblocking_start(void * buf, const size_t count) {
 }
 
 void spi_send_nonblocking_wait(void) {
-    while (busy) __WFI();
+    while (busy) { yield(); __WFI(); }
 }
 
 int spi_sd_flush_write(void) {
-    while (card_write_cursor || waiting_while_card_busy) __WFI();
+    while (card_write_cursor || waiting_while_card_busy) { yield(); __WFI(); }
 
     uint16_t response = card_write_response;
 //    if (response != 0xE5) fprintf(stderr, "%s(%d): response 0x%2.2X\n", __func__, __LINE__, response);
@@ -376,7 +379,7 @@ void spi_sd_write_more_blocks(const void * buf, const unsigned long blocks) {
 }
 
 static void spi_receive_nonblocking_wait(void) {
-    while (busy) __WFI();
+    while (busy) { yield(); __WFI(); }
 }
 
 static void spi_receive(void * buf, const size_t size) {
