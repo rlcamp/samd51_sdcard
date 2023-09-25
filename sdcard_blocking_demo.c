@@ -1,3 +1,7 @@
+/* this code is included for historical reasons but we don't want the arduino ide to compile
+ it, hence the if 0 */
+#if 0
+
 #include <Arduino.h>
 #include <stdio.h>
 
@@ -141,3 +145,4 @@ void setup() {
 void loop() {
     __WFI();
 }
+#endif
