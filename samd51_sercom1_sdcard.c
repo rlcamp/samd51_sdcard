@@ -296,6 +296,7 @@ void DMAC_2_Handler(void) {
         SERCOM1->SPI.DATA.bit.DATA = 0xff;
         while (!SERCOM1->SPI.INTFLAG.bit.RXC);
         card_write_response = SERCOM1->SPI.DATA.bit.DATA;
+        /* TODO: validate card write response and abort multi block transfer on failure */
 
         spi_wait_while_card_busy_nonblocking_start();
     }
