@@ -3,6 +3,16 @@
 
 #include "samd51_sercom1_sdcard.h"
 
+void led_init(void) {
+    /* pad PA23 on samd51 (pin 13 on the adafruit feather m4 express) */
+    PORT->Group[0].OUTCLR.reg = (1U << 23);
+    PORT->Group[0].DIRSET.reg = (1U << 23);
+    PORT->Group[0].PINCFG[23].reg = 0;
+}
+
+void led_on(void) { PORT->Group[0].OUTSET.reg = (1ul << 23); }
+void led_off(void) { PORT->Group[0].OUTCLR.reg = (1ul << 23); }
+
 void printf_block_of_hex(const unsigned char * data, const size_t size) {
     for (const unsigned char * line = data; line < data + size; line += 32) {
         for (const unsigned char * cursor = line; cursor < line + 32; cursor++)
@@ -14,12 +24,14 @@ void printf_block_of_hex(const unsigned char * data, const size_t size) {
 static unsigned char bufs[2][2048];
 
 void setup() {
+    led_init();
     printf("\nhello\n");
+    led_on();
 
     spi_sd_init();
     printf("card initted\n");
 
-  static unsigned char buf[1024];
+    static unsigned char buf[1024];
 
     printf("block 0:\n");
     spi_sd_read_blocks(buf, 1, 0);
@@ -84,11 +96,13 @@ void setup() {
 
         /* loop over the 4 MB erase cycle in 2 kB chunks */
         for (size_t ichunk = 0; ichunk < chunks; ichunk++) {
+            led_on();
             /* fill the current 2048-byte chunk with something, while the previous chunk is written */
             unsigned char * restrict const buf_now = bufs[ichunk % 2];
             for (size_t ival = 0; ival < CHUNK_SIZE / sizeof(uint16_t); ival++)
                 memcpy(buf_now + 2 * ival, &(uint16_t) { ival }, sizeof(uint16_t));
             memcpy(buf_now, &(uint32_t) { iaddress + CHUNK_SIZE * ichunk }, sizeof(uint32_t));
+            led_off();
 
             /* if not the first batch, wait for the previous batch to finish */
             if (ichunk && -1 == spi_sd_flush_write()) {
@@ -118,6 +132,7 @@ void setup() {
     }
 
     /* just reset and wait for another connection */
+    led_off();
     NVIC_SystemReset();
 }
 
