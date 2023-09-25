@@ -19,6 +19,7 @@ int _write(int file, char * buf, int bytes) {
         initted = 1;
     }
 
+    if (!Serial.dtr()) NVIC_SystemReset();
     Serial.write(buf, bytes);
     return bytes;
 }
