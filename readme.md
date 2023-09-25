@@ -13,3 +13,5 @@ To use this example, clone the repo, drop in ff.c, ff.h, diskio.h, and ffunicode
 ### Caveats
 
 This code is optimized for the case where almost all sectors that fatfs wants to write are consecutive, and no pre-erasing is done. Not all cards may behave optimally with this use pattern, but the two I tested were fine with it, at least after having been formatted with the official sdcard.org tool.
+
+A fair amount of work went into making the underlying SPI SD writes non-blocking for multiple contiguous sectors staged in SRAM, before it was recognized that when adding a FAT filesystem, the only practical way to retain any kind of guarantee of progress by non-interrupt code while waiting for the SD card would be with task-based concurrency of one form or another. Therefore a dummy yield() function with weak linkage is included, which will be called prior to `__WFI()` in most places where the code must wait for a previously dispatched transaction to finish.
