@@ -1,4 +1,3 @@
-#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -8,22 +7,22 @@ extern "C" {
 void spi_sd_init(void);
 
 /* blocking...but uses dma internally and will probably expose the nonblocking api if needed */
-int spi_sd_read_data(unsigned char * buf, const unsigned long size, const unsigned long long address);
+int spi_sd_read_blocks(unsigned char * buf, unsigned long blocks, unsigned long long block_address);
 
 /* initiates a transaction of one or more of the below */
-int spi_sd_write_data_start(unsigned long size, unsigned long long address);
+int spi_sd_write_blocks_start(unsigned long blocks, unsigned long long block_address);
 
 /* non blocking */
-void spi_send_sd_blocks_start(const void * buf, const size_t size);
+void spi_sd_write_more_blocks(const void * buf, const unsigned long blocks);
 
 /* blocks until the above has finished */
-int spi_send_sd_blocks_finish(void);
+int spi_sd_flush_write(void);
 
 /* terminates a transaction of one or more of the above */
-void spi_sd_write_data_end(void);
+void spi_sd_write_blocks_end(void);
 
 /* convenience function that writes multiples of 512 bytes, blocking */
-int spi_sd_write_data(unsigned char * buf, const unsigned long size, const unsigned long long address);
+int spi_sd_write_blocks(unsigned char * buf, const unsigned long blocks, const unsigned long long block_address);
 
 #ifdef __cplusplus
 }

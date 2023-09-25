@@ -22,22 +22,22 @@ void setup() {
   static unsigned char buf[1024];
 
     printf("block 0:\n");
-    spi_sd_read_data(buf, 512, 0);
+    spi_sd_read_blocks(buf, 1, 0);
     printf_block_of_hex(buf, 512);
     printf("\n");
 
     printf("block 1:\n");
-    spi_sd_read_data(buf, 512, 512);
+    spi_sd_read_blocks(buf, 1, 1);
     printf_block_of_hex(buf, 512);
     printf("\n");
 
     printf("block 0 and 1 together:\n");
-    spi_sd_read_data(buf, 1024, 0);
+    spi_sd_read_blocks(buf, 2, 0);
     printf_block_of_hex(buf, 1024);
     printf("\n");
 
     printf("block 0 again:\n");
-    spi_sd_read_data(buf, 512, 0);
+    spi_sd_read_blocks(buf, 1, 0);
     printf_block_of_hex(buf, 512);
 
     printf("\n");
@@ -47,7 +47,7 @@ void setup() {
     buf[1023] = 0x41;
 
     printf("writing:\n");
-    if (-1 == spi_sd_write_data(buf, 1024, 0)) {
+    if (-1 == spi_sd_write_blocks(buf, 2, 0)) {
         printf("writing returned error\n");
         return;
     }
@@ -55,16 +55,16 @@ void setup() {
     memset(buf, 0, sizeof(buf));
 
     printf("block 0 and 1 after mod:\n");
-    spi_sd_read_data(buf, 1024, 0);
+    spi_sd_read_blocks(buf, 2, 0);
     printf_block_of_hex(buf, 1024);
     printf("\n");
 
     buf[1023] = 0;
     printf("writing original back:\n");
-    spi_sd_write_data(buf, 1024, 0);
+    spi_sd_write_blocks(buf, 2, 0);
 
     printf("block 0 and 1 after writing original back:\n");
-    spi_sd_read_data(buf, 1024, 0);
+    spi_sd_read_blocks(buf, 2, 0);
     printf_block_of_hex(buf, 1024);
     printf("\n");
 #endif
@@ -80,7 +80,7 @@ void setup() {
         const unsigned long millis_first = millis();
 
         /* this is called once to begin the entire 4 MB transaction, as seen by the card */
-        spi_sd_write_data_start(ERASE_CYCLE_SIZE, iaddress);
+        spi_sd_write_blocks_start(ERASE_CYCLE_SIZE / 512, iaddress / 512);
 
         /* loop over the 4 MB erase cycle in 2 kB chunks */
         for (size_t ichunk = 0; ichunk < chunks; ichunk++) {
@@ -91,7 +91,7 @@ void setup() {
             memcpy(buf_now, &(uint32_t) { iaddress + CHUNK_SIZE * ichunk }, sizeof(uint32_t));
 
             /* if not the first batch, wait for the previous batch to finish */
-            if (ichunk && -1 == spi_send_sd_blocks_finish()) {
+            if (ichunk && -1 == spi_sd_flush_write()) {
                 error = 1;
                 fprintf(stderr, "%s: error\n", __func__);
                 break;
@@ -102,16 +102,16 @@ void setup() {
                 micros_prev += MICROS_PER_CHUNK;
             }
             /* this returns more or less immediately */
-            spi_send_sd_blocks_start(buf_now, CHUNK_SIZE);
+            spi_sd_write_more_blocks(buf_now, CHUNK_SIZE / 512);
         }
 
         if (error) break;
 
         /* wait for the last 2 kB chunk to finish */
-        spi_send_sd_blocks_finish();
+        spi_sd_flush_write();
 
         /* tell the card we have successfully reached the end of the 4 MB transaction */
-        spi_sd_write_data_end();
+        spi_sd_write_blocks_end();
 
         const unsigned long elapsed = millis() - millis_first;
         printf("%s: %lu ns mean per %u bytes, %lu kB/s\n", __func__, (unsigned long)((elapsed * 1000000ULL + chunks / 2) / chunks), CHUNK_SIZE, ((chunks * CHUNK_SIZE * 1000) / 1024 + elapsed / 2) / elapsed);

@@ -1,6 +1,7 @@
 #include "samd51_sercom1_sdcard.h"
 #include <samd.h>
 #include <assert.h>
+#include <stddef.h>
 
 #define BAUD_RATE_SLOW 250000
 #define BAUD_RATE_FAST 24000000
@@ -362,7 +363,7 @@ void spi_send_nonblocking_wait(void) {
     while (busy) __WFI();
 }
 
-int spi_send_sd_blocks_finish(void) {
+int spi_sd_flush_write(void) {
     while (card_write_cursor || waiting_while_card_busy) __WFI();
 
     uint16_t response = card_write_response;
@@ -371,9 +372,9 @@ int spi_send_sd_blocks_finish(void) {
     return response != 0xE5 ? -1 : 0;
 }
 
-void spi_send_sd_blocks_start(const void * buf, const size_t size) {
+void spi_sd_write_more_blocks(const void * buf, const unsigned long blocks) {
     card_write_cursor = buf;
-    card_write_cursor_stop = buf + size;
+    card_write_cursor_stop = buf + blocks * 512;
 
     spi_send_sd_next_block_start();
 }
@@ -578,15 +579,12 @@ void spi_sd_init(void) {
 #endif
 }
 
-int spi_sd_read_data(unsigned char * buf, unsigned long size, unsigned long long address) {
-    /* note that address must be a multiple of 512 */
-    const size_t blocks = size / 512;
-
+int spi_sd_read_blocks(unsigned char * buf, unsigned long blocks, unsigned long long block_address) {
     cs_low();
     wait_for_card_ready();
 
     /* send cmd17 or cmd18 */
-    if (command_and_r1_response(blocks > 1 ? 18 : 17, address / 512) != 0) return -1;
+    if (command_and_r1_response(blocks > 1 ? 18 : 17, block_address) != 0) return -1;
 
     /* clock out the response in 1 + 512 + 2 byte blocks */
     for (size_t iblock = 0; iblock < blocks; iblock++)
@@ -602,8 +600,7 @@ int spi_sd_read_data(unsigned char * buf, unsigned long size, unsigned long long
     return 0;
 }
 
-int spi_sd_write_data_start(unsigned long size, unsigned long long address) {
-    const size_t blocks = size / 512;
+int spi_sd_write_blocks_start(unsigned long blocks, unsigned long long block_address) {
     blocks_total_in_transaction = blocks;
 
     if (blocks > 1)
@@ -630,7 +627,7 @@ int spi_sd_write_data_start(unsigned long size, unsigned long long address) {
     cs_low();
     wait_for_card_ready();
 
-    const uint8_t response = command_and_r1_response(blocks > 1 ? 25 : 24, address / 512);
+    const uint8_t response = command_and_r1_response(blocks > 1 ? 25 : 24, block_address);
     if (response != 0) {
         cs_high();
         return -1;
@@ -642,7 +639,7 @@ int spi_sd_write_data_start(unsigned long size, unsigned long long address) {
     return 0;
 }
 
-void spi_sd_write_data_end(void) {
+void spi_sd_write_blocks_end(void) {
     /* if we sent cmd25, send stop tran token */
     if (blocks_total_in_transaction > 1) spi_send((unsigned char[2]) { 0xfd, 0xff }, 2);
 
@@ -651,15 +648,14 @@ void spi_sd_write_data_end(void) {
     cs_high();
 }
 
-int spi_sd_write_data(unsigned char * buf, const unsigned long size, const unsigned long long address) {
-    /* note that address and size must be multiples of 512 */
-    if (-1 == spi_sd_write_data_start(size, address))
+int spi_sd_write_blocks(unsigned char * buf, const unsigned long blocks, const unsigned long long block_address) {
+    if (-1 == spi_sd_write_blocks_start(blocks, block_address))
         return -1;
 
-    spi_send_sd_blocks_start(buf, size);
+    spi_sd_write_more_blocks(buf, blocks);
 
-    if (-1 == spi_send_sd_blocks_finish()) return -1;
-    spi_sd_write_data_end();
+    if (-1 == spi_sd_flush_write()) return -1;
+    spi_sd_write_blocks_end();
 
     return 0;
 }
