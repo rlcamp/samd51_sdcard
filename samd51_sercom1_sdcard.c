@@ -5,8 +5,8 @@
 #define BAUD_RATE_SLOW 250000
 #define BAUD_RATE_FAST 24000000
 
-#define ICHANNEL_SPI_WRITE 1
-#define ICHANNEL_SPI_READ 2
+#define ICHANNEL_SPI_WRITE 2
+#define ICHANNEL_SPI_READ 3
 
 /* smaller values use more cpu while waiting but have lower latency */
 #define CARD_BUSY_BYTES_PER_CHECK 16
@@ -29,11 +29,6 @@ static void spi_dma_init(void) {
         DMAC->CTRL.reg = DMAC_CTRL_DMAENABLE | DMAC_CTRL_LVLEN(0xF);
     }
 
-    /* must agree with ICHANNEL_SPI_WRITE */
-    static_assert(1 == ICHANNEL_SPI_WRITE, "dmac channel isr mismatch");
-    NVIC_EnableIRQ(DMAC_1_IRQn);
-    NVIC_SetPriority(DMAC_1_IRQn, (1 << __NVIC_PRIO_BITS) - 1);
-
     /* reset channel */
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.ENABLE = 0;
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.SWRST = 1;
@@ -41,15 +36,14 @@ static void spi_dma_init(void) {
     /* clear sw trigger */
     DMAC->SWTRIGCTRL.reg &= ~(1 << ICHANNEL_SPI_WRITE);
 
+    NVIC_EnableIRQ(DMAC_2_IRQn);
+    NVIC_SetPriority(DMAC_2_IRQn, (1 << __NVIC_PRIO_BITS) - 1);
+    static_assert(2 == ICHANNEL_SPI_WRITE, "dmac channel isr mismatch");
+
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.RUNSTDBY = 1;
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.TRIGSRC = 0x07; /* trigger when sercom1 is ready to send a new byte */
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.TRIGACT = DMAC_CHCTRLA_TRIGACT_BURST_Val; /* transfer one byte when triggered */
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.BURSTLEN = DMAC_CHCTRLA_BURSTLEN_SINGLE_Val; /* one burst = one beat */
-
-    /* must agree with ICHANNEL_SPI_READ */
-    static_assert(2 == ICHANNEL_SPI_READ, "dmac channel isr mismatch");
-    NVIC_EnableIRQ(DMAC_2_IRQn);
-    NVIC_SetPriority(DMAC_2_IRQn, (1 << __NVIC_PRIO_BITS) - 1);
 
     /* reset channel */
     DMAC->Channel[ICHANNEL_SPI_READ].CHCTRLA.bit.ENABLE = 0;
@@ -57,6 +51,10 @@ static void spi_dma_init(void) {
 
     /* clear sw trigger */
     DMAC->SWTRIGCTRL.reg &= ~(1 << ICHANNEL_SPI_READ);
+
+    static_assert(3 == ICHANNEL_SPI_READ, "dmac channel isr mismatch");
+    NVIC_EnableIRQ(DMAC_3_IRQn);
+    NVIC_SetPriority(DMAC_3_IRQn, (1 << __NVIC_PRIO_BITS) - 1);
 
     DMAC->Channel[ICHANNEL_SPI_READ].CHCTRLA.bit.RUNSTDBY = 1;
     DMAC->Channel[ICHANNEL_SPI_READ].CHCTRLA.bit.TRIGSRC = 0x06; /* trigger when sercom1 has received one new byte */
@@ -193,7 +191,7 @@ static void spi_send_nonblocking_start(const void * buf, const size_t count) {
     /* reset the crc */
     DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0 }.reg;
     DMAC->CRCCHKSUM.reg = 0;
-    DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0x21 }.reg;
+    DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0x20 + ICHANNEL_SPI_WRITE }.reg;
 
     busy = 1;
 
@@ -267,7 +265,8 @@ static void spi_wait_while_card_busy_nonblocking_start(void) {
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
 }
 
-void DMAC_1_Handler(void) {
+static_assert(2 == ICHANNEL_SPI_WRITE, "dmac channel isr mismatch");
+void DMAC_2_Handler(void) {
     if (!(DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.bit.TCMPL)) return;
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
 
@@ -302,7 +301,8 @@ void DMAC_1_Handler(void) {
     }
 }
 
-void DMAC_2_Handler(void) {
+static_assert(3 == ICHANNEL_SPI_READ, "dmac channel isr mismatch");
+void DMAC_3_Handler(void) {
     if (!(DMAC->Channel[ICHANNEL_SPI_READ].CHINTFLAG.bit.TCMPL)) return;
     DMAC->Channel[ICHANNEL_SPI_READ].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
 
