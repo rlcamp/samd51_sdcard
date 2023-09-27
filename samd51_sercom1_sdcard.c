@@ -1,5 +1,13 @@
 #include "samd51_sercom1_sdcard.h"
+
+#ifdef NON_ANCIENT_HEADER_PATHS
+/* newer cmsis-atmel from upstream */
+#include <samd51j19a.h>
+#else
+/* older cmsis-atmel from adafruit */
 #include <samd.h>
+#endif
+
 #include <assert.h>
 #include <stddef.h>
 
