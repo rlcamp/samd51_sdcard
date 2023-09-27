@@ -24,17 +24,8 @@ DSTATUS disk_initialize(BYTE pdrv) {
     return 0;
 }
 
-static char write_in_progress = 0;
-
 DRESULT disk_read(BYTE pdrv, BYTE * buff, LBA_t sector, UINT count) {
     (void)pdrv;
-
-    if (write_in_progress) {
-        if (-1 == spi_sd_flush_write()) return RES_PARERR;
-        /* TODO: error handling */
-        spi_sd_write_blocks_end();
-        write_in_progress = 0;
-    }
 
     return -1 == spi_sd_read_blocks(buff, count, sector) ? RES_PARERR : 0;
 }
@@ -42,19 +33,15 @@ DRESULT disk_read(BYTE pdrv, BYTE * buff, LBA_t sector, UINT count) {
 #if !FF_FS_READONLY
 DRESULT disk_write(BYTE pdrv, const BYTE * buff, LBA_t sector, UINT count) {
     (void)pdrv;
-    static LBA_t next_sector_of_transaction_in_progress;
-    if (!write_in_progress || (write_in_progress && next_sector_of_transaction_in_progress != sector)) {
-        if (write_in_progress) {
-            if (-1 == spi_sd_flush_write()) return RES_ERROR;
-          /* TODO: error handling */
-            spi_sd_write_blocks_end();
-        }
-        if (-1 == spi_sd_write_blocks_start(sector)) return RES_ERROR;
-    }
+
+    spi_sd_write_pre_erase(count);
+    if (-1 == spi_sd_write_blocks_start(sector)) return RES_ERROR;
+
     spi_sd_write_more_blocks(buff, count);
     if (-1 == spi_sd_flush_write()) return RES_ERROR;
-    next_sector_of_transaction_in_progress = sector + count;
-    write_in_progress = 1;
+
+    spi_sd_write_blocks_end();
+
     return 0;
 }
 #endif
@@ -63,9 +50,6 @@ DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void * buff) {
     (void)pdrv;
     if (CTRL_SYNC == cmd) {
         if (-1 == spi_sd_flush_write()) return RES_ERROR;
-        if (write_in_progress)
-            spi_sd_write_blocks_end();
-        write_in_progress = 0;
         return 0;
     }
     else if (GET_BLOCK_SIZE == cmd) {
