@@ -37,8 +37,12 @@ DRESULT disk_write(BYTE pdrv, const BYTE * buff, LBA_t sector, UINT count) {
     spi_sd_write_pre_erase(count);
     if (-1 == spi_sd_write_blocks_start(sector)) return RES_ERROR;
 
-    spi_sd_write_more_blocks(buff, count);
-    if (-1 == spi_sd_flush_write()) return RES_ERROR;
+    for (const BYTE * s = buff + 512 * count; buff < s; buff += 512) {
+        spi_sd_write_more_blocks(buff, 1);
+
+        /* this will block, but will internally call yield() and __WFI() */
+        if (-1 == spi_sd_flush_write()) return RES_ERROR;
+    }
 
     spi_sd_write_blocks_end();
 
