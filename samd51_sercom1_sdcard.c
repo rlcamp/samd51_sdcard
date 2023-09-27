@@ -167,7 +167,7 @@ static void spi_init(unsigned long baudrate) {
     while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
 }
 
-static volatile char busy = 0;
+static volatile char spi_busy_accessing_sram = 0;
 static volatile char waiting_while_card_busy;
 static unsigned char card_busy_result;
 static const unsigned char * card_write_cursor, * card_write_cursor_stop;
@@ -191,7 +191,7 @@ static void spi_send_nonblocking_start(const void * buf, const size_t count) {
     DMAC->CRCCHKSUM.reg = 0;
     DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0x20 + ICHANNEL_SPI_WRITE }.reg;
 
-    busy = 1;
+    spi_busy_accessing_sram = 1;
 
     /* ensure changes to descriptors have propagated to sram prior to enabling peripheral */
     __DSB();
@@ -268,7 +268,7 @@ void DMAC_2_Handler(void) {
     if (!(DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.bit.TCMPL)) return;
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
 
-    busy = 0;
+    spi_busy_accessing_sram = 0;
 
     if (card_write_cursor) {
         /* grab the CRC that the DMAC calculated on the outgoing 512 bytes... */
@@ -305,7 +305,7 @@ void DMAC_3_Handler(void) {
     if (!(DMAC->Channel[ICHANNEL_SPI_READ].CHINTFLAG.bit.TCMPL)) return;
     DMAC->Channel[ICHANNEL_SPI_READ].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
 
-    busy = 0;
+    spi_busy_accessing_sram = 0;
 
     if (waiting_while_card_busy) {
         if (0xff == card_busy_result) {
@@ -344,7 +344,7 @@ static void spi_receive_nonblocking_start(void * buf, const size_t count) {
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTENCLR.bit.TCMPL = 1;
     DMAC->Channel[ICHANNEL_SPI_READ].CHINTENSET.bit.TCMPL = 1;
 
-    busy = 1;
+    spi_busy_accessing_sram = 1;
 
     /* ensure changes to descriptors have propagated to sram prior to enabling peripheral */
     __DSB();
@@ -354,10 +354,6 @@ static void spi_receive_nonblocking_start(void * buf, const size_t count) {
 
     /* setting this starts the transaction */
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
-}
-
-void spi_send_nonblocking_wait(void) {
-    while (busy) { yield(); __WFI(); }
 }
 
 int spi_sd_flush_write(void) {
@@ -376,13 +372,13 @@ void spi_sd_write_more_blocks(const void * buf, const unsigned long blocks) {
     spi_send_sd_next_block_start();
 }
 
-static void spi_receive_nonblocking_wait(void) {
-    while (busy) { yield(); __WFI(); }
+static void wait_while_spi_accessing_sram(void) {
+    while (spi_busy_accessing_sram) { yield(); __WFI(); }
 }
 
 static void spi_receive(void * buf, const size_t size) {
     spi_receive_nonblocking_start(buf, size);
-    spi_receive_nonblocking_wait();
+    wait_while_spi_accessing_sram();
 }
 
 static void spi_send(const void * buf, const size_t size) {
@@ -390,8 +386,8 @@ static void spi_send(const void * buf, const size_t size) {
     while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
 
     spi_send_nonblocking_start(buf, size);
-    spi_send_nonblocking_wait();
-    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+    wait_while_spi_accessing_sram();
+    while (!SERCOM1->SPI.INTFLAG.bit.TXC); /* why is this here */
 }
 
 static uint32_t spi_receive_uint32(void) {
