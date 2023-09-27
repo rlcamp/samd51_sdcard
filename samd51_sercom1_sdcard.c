@@ -160,8 +160,6 @@ static void spi_init(unsigned long baudrate) {
 
     SERCOM1->SPI.BAUD.reg = 48000000U / (2U * baudrate) - 1U;
 
-    NVIC_SetPriority(SERCOM1_1_IRQn, (1 << __NVIC_PRIO_BITS) - 1);
-
     spi_dma_init();
 
     /* enable spi peripheral */
