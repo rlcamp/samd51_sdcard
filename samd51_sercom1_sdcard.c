@@ -209,7 +209,6 @@ static void spi_send_nonblocking_start(const void * buf, const size_t count) {
 }
 
 void spi_send_sd_next_block_start(void) {
-    if (!card_write_cursor) return;
     if (card_write_cursor == card_write_cursor_stop) {
         card_write_cursor = NULL;
         return;
@@ -234,7 +233,8 @@ static void spi_wait_while_card_busy_nonblocking_start(void) {
         SERCOM1->SPI.DATA.bit.DATA = 0xff;
         while (!SERCOM1->SPI.INTFLAG.bit.RXC);
         if (0xff == SERCOM1->SPI.DATA.bit.DATA) {
-            spi_send_sd_next_block_start();
+            if (card_write_cursor)
+                spi_send_sd_next_block_start();
             return;
         }
     }
@@ -304,6 +304,9 @@ void DMAC_2_Handler(void) {
         card_write_response = SERCOM1->SPI.DATA.bit.DATA;
         /* TODO: validate card write response and abort multi block transfer on failure */
 
+        if (card_write_cursor == card_write_cursor_stop)
+            card_write_cursor = NULL;
+
         spi_wait_while_card_busy_nonblocking_start();
     }
 }
@@ -319,7 +322,8 @@ void DMAC_3_Handler(void) {
         if (0xff == card_busy_result) {
             waiting_while_card_busy = 0;
 
-            spi_send_sd_next_block_start();
+            if (card_write_cursor)
+                spi_send_sd_next_block_start();
         } else {
             /* need to try again */
             DMAC->Channel[ICHANNEL_SPI_READ].CHCTRLA.bit.ENABLE = 1;
