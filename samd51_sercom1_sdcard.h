@@ -16,7 +16,7 @@ void spi_sd_write_pre_erase(unsigned long blocks);
 int spi_sd_write_blocks_start(unsigned long long block_address);
 
 /* non blocking */
-void spi_sd_write_more_blocks(const void * buf, const unsigned long blocks);
+void spi_sd_start_writing_a_block(const void * buf);
 
 /* blocks until the above has finished */
 int spi_sd_flush_write(void);

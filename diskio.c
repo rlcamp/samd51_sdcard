@@ -28,6 +28,7 @@ DRESULT disk_read(BYTE pdrv, BYTE * buff, LBA_t sector, UINT count) {
     (void)pdrv;
 //    fprintf(stderr, "%s(%d): reading %u blocks starting at %u\n", __func__, __LINE__, count, (unsigned)sector);
 
+    /* this will block, but will internally call yield() and __WFI() */
     return -1 == spi_sd_read_blocks(buff, count, sector) ? RES_PARERR : 0;
 }
 
@@ -36,17 +37,8 @@ DRESULT disk_write(BYTE pdrv, const BYTE * buff, LBA_t sector, UINT count) {
     (void)pdrv;
 //    fprintf(stderr, "%s(%d): writing %u blocks starting at %u\n", __func__, __LINE__, count, (unsigned)sector);
 
-    spi_sd_write_pre_erase(count);
-    if (-1 == spi_sd_write_blocks_start(sector)) return RES_ERROR;
-
-    for (const BYTE * s = buff + 512 * count; buff < s; buff += 512) {
-        spi_sd_write_more_blocks(buff, 1);
-
-        /* this will block, but will internally call yield() and __WFI() */
-        if (-1 == spi_sd_flush_write()) return RES_ERROR;
-    }
-
-    spi_sd_write_blocks_end();
+    /* this will block, but will internally call yield() and __WFI() */
+    if (-1 == spi_sd_write_blocks(buff, count, sector)) return RES_ERROR;
 
     return 0;
 }

@@ -178,7 +178,7 @@ static void spi_init(unsigned long baudrate) {
 static volatile char spi_busy_accessing_sram = 0;
 static volatile char waiting_while_card_busy;
 static unsigned char card_busy_result;
-static const unsigned char * card_write_cursor, * card_write_cursor_stop;
+static char writing_a_block;
 static unsigned char card_write_response;
 
 static void spi_send_nonblocking_start(const void * buf, const size_t count) {
@@ -189,10 +189,16 @@ static void spi_send_nonblocking_start(const void * buf, const size_t count) {
     descriptor_write->BTCTRL.bit.BLOCKACT = DMAC_BTCTRL_BLOCKACT_INT_Val;
 
     /* clear pending interrupt from before */
+    DMAC->Channel[ICHANNEL_SPI_READ].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
+
+    /* clear pending interrupt from before */
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
 
     /* enable interrupt on write completion */
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTENSET.bit.TCMPL = 1;
+
+    /* disable interrupt on read completion */
+    DMAC->Channel[ICHANNEL_SPI_READ].CHINTENCLR.bit.TCMPL = 1;
 
     /* reset the crc */
     DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0 }.reg;
@@ -208,22 +214,6 @@ static void spi_send_nonblocking_start(const void * buf, const size_t count) {
     DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
 }
 
-void spi_send_sd_next_block_start(void) {
-    if (card_write_cursor == card_write_cursor_stop) {
-        card_write_cursor = NULL;
-        return;
-    }
-
-    SERCOM1->SPI.CTRLB.bit.RXEN = 0;
-    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
-
-    while (!SERCOM1->SPI.INTFLAG.bit.DRE);
-    SERCOM1->SPI.DATA.bit.DATA = 1 ? 0xfc : 0xfe;
-
-    card_write_cursor += 512;
-    spi_send_nonblocking_start(card_write_cursor - 512, 512);
-}
-
 static void spi_wait_while_card_busy_nonblocking_start(void) {
     SERCOM1->SPI.CTRLB.bit.RXEN = 1;
     while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
@@ -232,11 +222,8 @@ static void spi_wait_while_card_busy_nonblocking_start(void) {
     for (size_t ipass = 0; ipass < 4; ipass++) {
         SERCOM1->SPI.DATA.bit.DATA = 0xff;
         while (!SERCOM1->SPI.INTFLAG.bit.RXC);
-        if (0xff == SERCOM1->SPI.DATA.bit.DATA) {
-            if (card_write_cursor)
-                spi_send_sd_next_block_start();
+        if (0xff == SERCOM1->SPI.DATA.bit.DATA)
             return;
-        }
     }
 
     static const unsigned char all_ones = 0xff;
@@ -278,7 +265,7 @@ void DMAC_2_Handler(void) {
 
     spi_busy_accessing_sram = 0;
 
-    if (card_write_cursor) {
+    if (writing_a_block) {
         /* grab the CRC that the DMAC calculated on the outgoing 512 bytes... */
         while (DMAC->CRCSTATUS.bit.CRCBUSY);
         const uint16_t crc = DMAC->CRCCHKSUM.reg;
@@ -302,10 +289,8 @@ void DMAC_2_Handler(void) {
         SERCOM1->SPI.DATA.bit.DATA = 0xff;
         while (!SERCOM1->SPI.INTFLAG.bit.RXC);
         card_write_response = SERCOM1->SPI.DATA.bit.DATA;
-        /* TODO: validate card write response and abort multi block transfer on failure */
 
-        if (card_write_cursor == card_write_cursor_stop)
-            card_write_cursor = NULL;
+        writing_a_block = 0;
 
         spi_wait_while_card_busy_nonblocking_start();
     }
@@ -319,12 +304,9 @@ void DMAC_3_Handler(void) {
     spi_busy_accessing_sram = 0;
 
     if (waiting_while_card_busy) {
-        if (0xff == card_busy_result) {
+        if (0xff == card_busy_result)
             waiting_while_card_busy = 0;
-
-            if (card_write_cursor)
-                spi_send_sd_next_block_start();
-        } else {
+        else {
             /* need to try again */
             DMAC->Channel[ICHANNEL_SPI_READ].CHCTRLA.bit.ENABLE = 1;
             DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
@@ -369,7 +351,7 @@ static void spi_receive_nonblocking_start(void * buf, const size_t count) {
 }
 
 int spi_sd_flush_write(void) {
-    while (card_write_cursor || waiting_while_card_busy) { yield(); __WFI(); }
+    while (__DSB(), writing_a_block || waiting_while_card_busy) { yield(); __WFI(); }
 
     uint16_t response = card_write_response;
 //    if (response != 0xE5) fprintf(stderr, "%s(%d): response 0x%2.2X\n", __func__, __LINE__, response);
@@ -377,20 +359,25 @@ int spi_sd_flush_write(void) {
     return response != 0xE5 ? -1 : 0;
 }
 
-void spi_sd_write_more_blocks(const void * buf, const unsigned long blocks) {
-    card_write_cursor = buf;
-    card_write_cursor_stop = buf + blocks * 512;
+void spi_sd_start_writing_a_block(const void * buf) {
+    SERCOM1->SPI.CTRLB.bit.RXEN = 0;
+    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
 
-    spi_send_sd_next_block_start();
+    while (!SERCOM1->SPI.INTFLAG.bit.DRE);
+    SERCOM1->SPI.DATA.bit.DATA = 1 ? 0xfc : 0xfe;
+
+    writing_a_block = 1;
+    spi_send_nonblocking_start(buf, 512);
 }
 
 static void wait_while_spi_accessing_sram(void) {
-    while (spi_busy_accessing_sram) { yield(); __WFI(); }
+    while (__DSB(), spi_busy_accessing_sram) { yield(); __WFI(); }
 }
 
 static void spi_receive(void * buf, const size_t size) {
     spi_receive_nonblocking_start(buf, size);
     wait_while_spi_accessing_sram();
+    /* TODO: is a wait on TXC needed here or not */
 }
 
 static void spi_send(const void * buf, const size_t size) {
@@ -399,7 +386,7 @@ static void spi_send(const void * buf, const size_t size) {
 
     spi_send_nonblocking_start(buf, size);
     wait_while_spi_accessing_sram();
-    while (!SERCOM1->SPI.INTFLAG.bit.TXC); /* why is this here */
+    while (!SERCOM1->SPI.INTFLAG.bit.TXC); /* TODO: why is this here and where else is it needed? */
 }
 
 static uint32_t spi_receive_uint32(void) {
@@ -658,9 +645,13 @@ int spi_sd_write_blocks(const void * buf, const unsigned long blocks, const unsi
     if (-1 == spi_sd_write_blocks_start(block_address))
         return -1;
 
-    spi_sd_write_more_blocks(buf, blocks);
+    for (const unsigned char * c = buf, * s = c + 512 * blocks; c < s; c += 512) {
+        spi_sd_start_writing_a_block(c);
 
-    if (-1 == spi_sd_flush_write()) return -1;
+        /* this will block, but will internally call yield() and __WFI() */
+        if (-1 == spi_sd_flush_write()) return -1;
+    }
+
     spi_sd_write_blocks_end();
 
     return 0;
