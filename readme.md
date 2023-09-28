@@ -14,8 +14,6 @@ To use this example: clone the repo, drop in `ff.c`, `ff.h`, `diskio.h`, and `ff
 
 ### Caveats
 
-This code is optimized for the case where almost all sectors that fatfs wants to write are consecutive, and no pre-erasing is done. Not all cards may behave optimally with this use pattern, but the two I tested were fine with it, at least after having been formatted with the official sdcard.org tool.
-
 A fair amount of work went into making the underlying SPI SD writes non-blocking for multiple contiguous sectors staged in SRAM, before it was recognized that when adding a FAT filesystem, the only practical way to retain any kind of guarantee of progress by non-interrupt code while waiting for the SD card would be with task-based concurrency of one form or another. Therefore a dummy yield() function with weak linkage is included, which will be called prior to `__WFI()` in most places where the code must wait for a previously dispatched transaction to finish.
 
 The Arduino sketch is not optimized for power consumption. However, the same file containing the setup() and loop() functions can be used outside the Arduino IDE and linked with [a minimal samd51 bringup implementation](https://github.com/rlcamp/samd51_blink/blob/main/samd51_init.c) and run at 48 MHz instead of the default 120 MHz, and the USB CDC serial disabled, in which case the same example code draws very little power (on the order of 10 mW total for Feather M4 + microSD card with the card on my bench, when logging 192 kB/s, using a 32 kB buffer).
