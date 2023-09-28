@@ -12,7 +12,8 @@
 #include <stddef.h>
 
 #define BAUD_RATE_SLOW 250000
-#define BAUD_RATE_FAST 24000000
+#define BAUD_RATE_FAST 12000000
+/* note you will have problems if you try to run spi at 24 MBd on a 48 MHz clock */
 
 #define ICHANNEL_SPI_WRITE 2
 #define ICHANNEL_SPI_READ 3
