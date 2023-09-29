@@ -27,7 +27,6 @@ DSTATUS disk_initialize(BYTE pdrv) {
 DRESULT disk_read(BYTE pdrv, BYTE * buff, LBA_t sector, UINT count) {
     (void)pdrv;
 //    fprintf(stderr, "%s(%d): reading %u blocks starting at %u\n", __func__, __LINE__, count, (unsigned)sector);
-
     /* this will block, but will internally call yield() and __WFI() */
     return -1 == spi_sd_read_blocks(buff, count, sector) ? RES_PARERR : 0;
 }
@@ -36,7 +35,6 @@ DRESULT disk_read(BYTE pdrv, BYTE * buff, LBA_t sector, UINT count) {
 DRESULT disk_write(BYTE pdrv, const BYTE * buff, LBA_t sector, UINT count) {
     (void)pdrv;
 //    fprintf(stderr, "%s(%d): writing %u blocks starting at %u\n", __func__, __LINE__, count, (unsigned)sector);
-
     /* this will block, but will internally call yield() and __WFI() */
     if (-1 == spi_sd_write_blocks(buff, count, sector)) return RES_ERROR;
 
@@ -46,20 +44,12 @@ DRESULT disk_write(BYTE pdrv, const BYTE * buff, LBA_t sector, UINT count) {
 
 DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void * buff) {
     (void)pdrv;
-    if (CTRL_SYNC == cmd) {
-        if (-1 == spi_sd_flush_write()) return RES_ERROR;
-        return 0;
-    }
-    else if (GET_BLOCK_SIZE == cmd) {
-        LBA_t * out = buff;
-        *out = 1; /* TODO: populate this from actual */
-        return 0;
-    }
-    else if (GET_SECTOR_COUNT == cmd) {
-        LBA_t * out = buff;
-        *out = INT_MAX; /* TODO: populate this from actual */
-        return 0;
-    }
-
-    return RES_PARERR;
+    if (CTRL_SYNC == cmd)
+        return -1 == spi_sd_flush_write() ? RES_ERROR : 0;
+    else if (GET_BLOCK_SIZE == cmd)
+        *(LBA_t *)buff = 1; /* TODO: populate this from actual */
+    else if (GET_SECTOR_COUNT == cmd)
+        *(LBA_t *)buff = INT_MAX; /* TODO: populate this from actual */
+    else return RES_PARERR;
+    return 0;
 }
