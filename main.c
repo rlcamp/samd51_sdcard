@@ -90,10 +90,19 @@ void TC4_Handler(void) {
 }
 
 static void halt(void) {
-    /* wait a couple ticks before disabling USB */
-    for (const unsigned long ticks_initial = tc4_ticks; tc4_ticks - ticks_initial < 2;) __WFI();
+    /* just in case newlib or whatever is still buffering */
+    fflush(stdout);
+    fflush(stderr);
+
+    /* spin for about three usb sofs, assuming this loop takes 3 or more cycles */
+    for (size_t ispin = 0; ispin < F_CPU / 1024U; ispin++) asm volatile("");
+
+    /* then cut usb so that the other end sees eof after all data has been flushed */
     USB->DEVICE.CTRLA.bit.ENABLE = 0;
+
     led_off();
+
+    /* sleep forever */
     while (1) __WFI();
 }
 
