@@ -58,6 +58,7 @@ DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void * buff) {
     else if (GET_SECTOR_COUNT == cmd) {
         LBA_t * out = buff;
         *out = INT_MAX; /* TODO: populate this from actual */
+        return 0;
     }
 
     return RES_PARERR;
