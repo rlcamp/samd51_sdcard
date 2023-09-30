@@ -9,8 +9,11 @@
 #include <stdio.h>
 #include <assert.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include "ff.h"
+
+#define NOPE(...) do { fprintf(stderr, "error: " __VA_ARGS__); exit(EXIT_FAILURE); } while(0)
 
 #ifndef ARDUINO
 #include "samd_usb_cdc_serial.h"
@@ -89,7 +92,10 @@ void TC4_Handler(void) {
     tc4_ticks++;
 }
 
-static void halt(void) {
+/* invoked from within newlib when exit() is called */
+void _exit(int code) {
+    (void)code;
+
     /* just in case newlib or whatever is still buffering */
     fflush(stdout);
     fflush(stderr);
@@ -120,62 +126,52 @@ void setup(void) {
     FRESULT fres;
 
     fprintf(stderr, "attempting to mount\n");
-    if ((fres = f_mount(fs, "", 1))) {
-        fprintf(stderr, "%s: f_mount(): %d\n", __func__, fres);
-        halt();
-    }
+    if ((fres = f_mount(fs, "", 1)))
+        NOPE("%s: f_mount(): %d\n", __func__, fres);
+
     fprintf(stderr, "%s: mounted\n", __func__);
 
 #if 0
 #if 0
-    if ((fres = f_open(fp, "HELLO.TXT", FA_READ))) {
-        fprintf(stderr, "%s: f_open(): %d\n", __func__, fres);
-        halt();
-    }
+    if ((fres = f_open(fp, "HELLO.TXT", FA_READ)))
+        NOPE("%s: f_open(): %d\n", __func__, fres);
+
     fprintf(stderr, "%s: opened file for reading\n", __func__);
 
     UINT read_count;
     char buf[32];
-    if ((fres = f_read(fp, buf, sizeof(buf) - 1, &read_count))) {
-        fprintf(stderr, "%s: f_read(): %d\n", __func__, fres);
-        halt();
-    }
+    if ((fres = f_read(fp, buf, sizeof(buf) - 1, &read_count)))
+        NOPE("%s: f_read(): %d\n", __func__, fres);
+
     fprintf(stderr, "%s: file contains %u bytes\n", __func__, read_count);
     buf[read_count] = '\0';
     fprintf(stderr, "%s: file contents: \"%s\"", __func__, buf);
 #else
     char path[] = "HELLO.TXT";
-    if ((fres = f_open(fp, path, FA_WRITE | FA_CREATE_ALWAYS))) {
-        fprintf(stderr, "%s: f_open(): %d\n", __func__, fres);
-        halt();
-    }
+    if ((fres = f_open(fp, path, FA_WRITE | FA_CREATE_ALWAYS)))
+        NOPE("%s: f_open(): %d\n", __func__, fres);
+
     char buf[] = "hello from feather m4\n";
     UINT write_count;
-    if ((fres = f_write(fp, buf, strlen(buf), &write_count))) {
-        fprintf(stderr, "%s: f_read(): %d\n", __func__, fres);
-        halt();
-    }
+    if ((fres = f_write(fp, buf, strlen(buf), &write_count)))
+        NOPE("%s: f_write(): %d\n", __func__, fres);
+
     fprintf(stderr, "%s: wrote %u bytes\n", __func__, write_count);
 
 #endif
-    if ((fres = f_close(fp))) {
-        fprintf(stderr, "%s: f_close(): %d\n", __func__, fres);
-        halt();
-    }
+    if ((fres = f_close(fp)))
+        NOPE("%s: f_close(): %d\n", __func__, fres);
+
     fprintf(stderr, "%s: closed file\n", __func__);
 
-    if ((fres = f_unmount(""))) {
-        fprintf(stderr, "%s: f_unmount(): %d\n", __func__, fres);
-        halt();
-    }
-    fprintf(stderr, "%s: unmounted\n", __func__);
-    halt();
+    if ((fres = f_unmount("")))
+        NOPE("%s: f_unmount(): %d\n", __func__, fres);
+    exit(EXIT_SUCCESS);
+
 #else
     char path[] = "HELLO.BIN";
-    if ((fres = f_open(fp, path, FA_WRITE | FA_CREATE_ALWAYS))) {
-        fprintf(stderr, "%s: f_open(): %d\n", __func__, fres);
-        halt();
-    }
+    if ((fres = f_open(fp, path, FA_WRITE | FA_CREATE_ALWAYS)))
+        NOPE("%s: f_open(): %d\n", __func__, fres);
 
 #endif
     timer4_init();
@@ -203,44 +199,36 @@ void loop(void) {
 
     FRESULT fres;
     UINT write_count;
-    if ((fres = f_write(fp, chunk, sizeof(chunk), &write_count))) {
-        fprintf(stderr, "%s: f_write(): %d\n", __func__, fres);
-        halt();
-    }
+    if ((fres = f_write(fp, chunk, sizeof(chunk), &write_count)))
+        NOPE("%s: f_write(): %d\n", __func__, fres);
 
-    if (write_count < sizeof(chunk)) {
-        fprintf(stderr, "%s: short write\n", __func__);
-        halt();
-    }
+    if (write_count < sizeof(chunk))
+        NOPE("%s: short write\n", __func__);
+
 #else
     FRESULT fres;
     UINT read_count;
-    if ((fres = f_read(fp, chunk, sizeof(chunk), &read_count))) {
-        fprintf(stderr, "%s: f_read(): %d\n", __func__, fres);
-        halt();
-    }
-    if (read_count < sizeof(chunk)) {
-        fprintf(stderr, "%s: short read\n", __func__);
-        halt();
-    }
+    if ((fres = f_read(fp, chunk, sizeof(chunk), &read_count)))
+        NOPE("%s: f_read(): %d\n", __func__, fres);
+
+    if (read_count < sizeof(chunk))
+        NOPE("%s: short read\n", __func__);
 
     static size_t counter = 0;
     counter++;
 #endif
     if (counter >= 32768) {
         fprintf(stderr, "%s: finished\n", __func__);
-          if ((fres = f_close(fp))) {
-              fprintf(stderr, "%s: f_close(): %d\n", __func__, fres);
-              halt();
-          }
+          if ((fres = f_close(fp)))
+              NOPE("%s: f_close(): %d\n", __func__, fres);
+
           fprintf(stderr, "%s: closed file\n", __func__);
 
-          if ((fres = f_unmount(""))) {
-              fprintf(stderr, "%s: f_unmount(): %d\n", __func__, fres);
-              halt();
-          }
+          if ((fres = f_unmount("")))
+              NOPE("%s: f_unmount(): %d\n", __func__, fres);
+
           fprintf(stderr, "%s: unmounted\n", __func__);
-          halt();
+          exit(EXIT_SUCCESS);
     }
     led_off();
 }
