@@ -83,7 +83,11 @@ void timer4_init(void) {
     while (TC4->COUNT16.SYNCBUSY.bit.ENABLE);
 }
 
-static volatile _Atomic unsigned long tc4_ticks = 0;
+/* need not be volatile because it is only incremented within the interrupt handler and read
+ by the main thread, loads are guaranteed atomic by the architecture, and the read can be
+ marked volatile to prevent problematic optimizations without requiring a volatile rmw within
+ the interrupt handler */
+static unsigned long tc4_ticks = 0;
 
 void TC4_Handler(void) {
     if (!TC4->COUNT16.INTFLAG.bit.MC0) return;
@@ -182,7 +186,7 @@ void loop(void) {
 
 #ifdef TC4_TICKS_PER_CHUNK
     static unsigned long ticks_prev = 0;
-    if (__DSB(), tc4_ticks - ticks_prev < TC4_TICKS_PER_CHUNK) {
+    if (*(volatile unsigned long *)&tc4_ticks - ticks_prev < TC4_TICKS_PER_CHUNK) {
         __WFI();
         return;
     }
