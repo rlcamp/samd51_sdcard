@@ -12,8 +12,11 @@
 #include <stddef.h>
 
 #define BAUD_RATE_SLOW 250000
-#define BAUD_RATE_FAST 12000000
+#define BAUD_RATE_FAST (F_CPU / 4)
 /* note you will have problems if you try to run spi at 24 MBd on a 48 MHz clock */
+
+static_assert(((F_CPU / (2U * BAUD_RATE_FAST) - 1U) + 1U) * (2U * BAUD_RATE_FAST) == F_CPU,
+              "baud rate not possible");
 
 #define ICHANNEL_SPI_WRITE 2
 #define ICHANNEL_SPI_READ 3
@@ -115,7 +118,7 @@ static void spi_change_baud_rate(unsigned long baudrate) {
     SERCOM1->SPI.CTRLA.bit.ENABLE = 0;
     while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
 
-    SERCOM1->SPI.BAUD.reg = 48000000U / (2U * baudrate) - 1U;
+    SERCOM1->SPI.BAUD.reg = F_CPU / (2U * baudrate) - 1U;
 
     SERCOM1->SPI.CTRLA.bit.ENABLE = 1;
     while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
@@ -141,10 +144,10 @@ static void spi_init(unsigned long baudrate) {
 
     MCLK->APBAMASK.reg |= MCLK_APBAMASK_SERCOM1;
 
-    /* core clock */
+    /* unconditionally assume GCLK0 is running at F_CPU */
     GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].bit.CHEN = 0;
     while (GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].bit.CHEN);
-    GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].reg = (F_CPU == 48000000 ? GCLK_PCHCTRL_GEN_GCLK0 : GCLK_PCHCTRL_GEN_GCLK1) | GCLK_PCHCTRL_CHEN;
+    GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].reg = GCLK_PCHCTRL_GEN_GCLK0 | GCLK_PCHCTRL_CHEN;
     while (!GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].bit.CHEN);
 
     /* reset spi peripheral */
@@ -158,6 +161,7 @@ static void spi_init(unsigned long baudrate) {
         .CPOL = 0, /* sck is low when idle */
         .CPHA = 0,
         .DORD = 0, /* msb first */
+        .RUNSTDBY = 1
     }};
 
     SERCOM1->SPI.CTRLB = (SERCOM_SPI_CTRLB_Type) { .bit = {
@@ -167,7 +171,7 @@ static void spi_init(unsigned long baudrate) {
     }};
     while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
 
-    SERCOM1->SPI.BAUD.reg = 48000000U / (2U * baudrate) - 1U;
+    SERCOM1->SPI.BAUD.reg = F_CPU / (2U * baudrate) - 1U;
 
     spi_dma_init();
 
