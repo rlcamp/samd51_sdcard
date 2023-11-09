@@ -344,7 +344,7 @@ void spi_sd_start_writing_a_block(const void * buf) {
     while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
 
     while (!SERCOM1->SPI.INTFLAG.bit.DRE);
-    SERCOM1->SPI.DATA.bit.DATA = 1 ? 0xfc : 0xfe;
+    SERCOM1->SPI.DATA.bit.DATA = 0xfc;
 
     writing_a_block = 1;
     spi_send_nonblocking_start(buf, 512);
@@ -358,9 +358,16 @@ static void spi_send(const void * buf, const size_t size) {
     SERCOM1->SPI.CTRLB.bit.RXEN = 0;
     while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
 
-    spi_send_nonblocking_start(buf, size);
-    wait_while_spi_accessing_sram();
-    while (!SERCOM1->SPI.INTFLAG.bit.TXC); /* TODO: why is this here and where else is it needed? */
+    if (size <= 6)
+        for (size_t ibyte = 0; ibyte < size; ibyte++) {
+            while (!SERCOM1->SPI.INTFLAG.bit.DRE);
+            SERCOM1->SPI.DATA.bit.DATA = ((const char *)buf)[ibyte];
+        }
+    else {
+        spi_send_nonblocking_start(buf, size);
+        wait_while_spi_accessing_sram();
+    }
+    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
 }
 
 static uint32_t spi_receive_uint32(void) {
@@ -425,7 +432,6 @@ static int rx_data_block(unsigned char * buf) {
     /* read the 512 bytes with MOSI held high */
     spi_receive_nonblocking_start(buf, 512);
     wait_while_spi_accessing_sram();
-    /* TODO: is a wait on TXC needed here or not */
 
     /* read and discard two crc bytes */
     uint16_t crc = spi_receive_one_byte_with_rx_enabled() << 8;
@@ -611,8 +617,8 @@ int spi_sd_write_blocks_start(unsigned long long block_address) {
 }
 
 void spi_sd_write_blocks_end(void) {
-    /* if we sent cmd25, send stop tran token */
-    if (1) spi_send((unsigned char[2]) { 0xfd, 0xff }, 2);
+    /* send stop tran token */
+    spi_send((unsigned char[2]) { 0xfd, 0xff }, 2);
 
     wait_for_card_ready();
 
