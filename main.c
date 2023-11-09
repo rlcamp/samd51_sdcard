@@ -187,7 +187,8 @@ void loop(void) {
 #ifdef TC4_TICKS_PER_CHUNK
     static unsigned long ticks_prev = 0;
     if (*(volatile unsigned long *)&tc4_ticks - ticks_prev < TC4_TICKS_PER_CHUNK) {
-        __WFI();
+        __DSB();
+        __WFE();
         return;
     }
     ticks_prev += TC4_TICKS_PER_CHUNK;

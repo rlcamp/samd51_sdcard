@@ -28,6 +28,9 @@ void printf_block_of_hex(const unsigned char * data, const size_t size) {
 static unsigned char bufs[2][2048];
 
 void setup() {
+    /* ensure that __WFE() returns immediately if an interrupt is pending */
+    SCB->SCR |= SCB_SCR_SEVONPEND_Msk;
+
     led_init();
     printf("\nhello\n");
     led_on();

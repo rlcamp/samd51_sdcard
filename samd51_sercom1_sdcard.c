@@ -23,10 +23,11 @@ static_assert(((F_CPU / (2U * BAUD_RATE_FAST) - 1U) + 1U) * (2U * BAUD_RATE_FAST
 /* smaller values use more cpu while waiting but have lower latency */
 #define CARD_BUSY_BYTES_PER_CHECK 16
 
-__attribute__((weak, aligned(16))) SECTION_DMAC_DESCRIPTOR DmacDescriptor dmac_descriptors[8] = { 0 }, dmac_writeback[8] = { 0 };
+/* do not use SECTION_DMAC_DESCRIPTOR because the linker script does not define hsram */
+__attribute__((weak, aligned(16))) DmacDescriptor dmac_descriptors[8] = { 0 }, dmac_writeback[8] = { 0 };
 
 extern void yield(void);
-__attribute((weak)) void yield(void) { __WFI(); }
+__attribute((weak)) void yield(void) { __DSB(); __WFE(); }
 
 static void spi_dma_init(void) {
     /* if dma has not yet been initted... */
