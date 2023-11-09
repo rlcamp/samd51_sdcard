@@ -55,21 +55,12 @@ static void spi_dma_init(void) {
     NVIC_SetPriority(DMAC_2_IRQn, (1 << __NVIC_PRIO_BITS) - 1);
     static_assert(2 == IDMA_SPI_WRITE, "dmac channel isr mismatch");
 
-    DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.RUNSTDBY = 1;
-    DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.TRIGSRC = 0x07; /* trigger when sercom1 is ready to send a new byte */
-    DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.TRIGACT = DMAC_CHCTRLA_TRIGACT_BURST_Val; /* transfer one byte when triggered */
-    DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.BURSTLEN = DMAC_CHCTRLA_BURSTLEN_SINGLE_Val; /* one burst = one beat */
-
-    /* initialize unchanging properties of write descriptor */
-    *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_WRITE) = (DmacDescriptor) {
-        .DSTADDR.reg = (size_t)&(SERCOM1->SPI.DATA.reg),
-        .BTCTRL = {
-            .bit.VALID = 1,
-            .bit.DSTINC = 0, /* write to the same register every time */
-        }
-    };
-
-    __DSB();
+    DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.reg = (DMAC_CHCTRLA_Type) { .bit = {
+        .RUNSTDBY = 1,
+        .TRIGSRC = 0x07, /* trigger when sercom1 is ready to send a new byte/word */
+        .TRIGACT = DMAC_CHCTRLA_TRIGACT_BURST_Val, /* one burst per trigger */
+        .BURSTLEN = DMAC_CHCTRLA_BURSTLEN_SINGLE_Val /* one burst = one beat */
+    }}.reg;
 }
 
 static void cs_init(void) {
@@ -160,11 +151,17 @@ static char writing_a_block;
 static unsigned char card_write_response;
 
 static void spi_send_nonblocking_start(const void * buf, const size_t count) {
-    DmacDescriptor * descriptor_write = ((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_WRITE;
-    descriptor_write->BTCNT.reg = count;
-    descriptor_write->SRCADDR.reg = ((size_t)buf) + count;
-    descriptor_write->BTCTRL.bit.SRCINC = 1;
-    descriptor_write->BTCTRL.bit.BLOCKACT = DMAC_BTCTRL_BLOCKACT_INT_Val;
+    *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_WRITE) = (DmacDescriptor) {
+        .BTCNT.reg = count,
+        .SRCADDR.reg = ((size_t)buf) + count,
+        .DSTADDR.reg = (size_t)&(SERCOM1->SPI.DATA.reg),
+        .BTCTRL = { .bit = {
+            .VALID = 1,
+            .BLOCKACT = DMAC_BTCTRL_BLOCKACT_INT_Val,
+            .SRCINC = 1,
+            .DSTINC = 0, /* write to the same register every time */
+        }}
+    };
 
     /* clear pending interrupt from before */
     DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
