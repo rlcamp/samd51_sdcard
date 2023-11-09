@@ -42,7 +42,7 @@ static void spi_dma_init(void) {
         DMAC->WRBADDR.bit.WRBADDR = (unsigned long)dmac_writeback;
 
         /* re-enable dmac */
-        DMAC->CTRL.reg = DMAC_CTRL_DMAENABLE | DMAC_CTRL_LVLEN(0xF);
+        DMAC->CTRL.reg = (DMAC_CTRL_Type) { .bit = { .DMAENABLE = 1, .LVLEN0 = 1, .LVLEN1 = 1, .LVLEN2 = 1, .LVLEN3 = 1 } }.reg;
     }
 
     /* reset channel */
@@ -150,6 +150,9 @@ static void spi_init(unsigned long baudrate) {
     GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].reg = GCLK_PCHCTRL_GEN_GCLK0 | GCLK_PCHCTRL_CHEN;
     while (!GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].bit.CHEN);
 
+    NVIC_EnableIRQ(SERCOM1_2_IRQn);
+    NVIC_SetPriority(SERCOM1_2_IRQn, (1 << __NVIC_PRIO_BITS) - 1);
+
     /* reset spi peripheral */
     SERCOM1->SPI.CTRLA.bit.SWRST = 1;
     while (SERCOM1->SPI.CTRLA.bit.SWRST || SERCOM1->SPI.SYNCBUSY.bit.SWRST);
@@ -181,8 +184,6 @@ static void spi_init(unsigned long baudrate) {
 }
 
 static volatile char spi_busy_accessing_sram = 0;
-static volatile char waiting_while_card_busy;
-static unsigned char card_busy_result;
 static char writing_a_block;
 static unsigned char card_write_response;
 
@@ -214,50 +215,6 @@ static void spi_send_nonblocking_start(const void * buf, const size_t count) {
 
     /* ensure changes to descriptors have propagated to sram prior to enabling peripheral */
     __DSB();
-
-    /* setting this starts the transaction */
-    DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
-}
-
-static void spi_wait_while_card_busy_nonblocking_start(void) {
-    SERCOM1->SPI.CTRLB.bit.RXEN = 1;
-    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
-
-    /* make a few blocking attempts to see if the card is ready immediately */
-    for (size_t ipass = 0; ipass < 4; ipass++) {
-        SERCOM1->SPI.DATA.bit.DATA = 0xff;
-        while (!SERCOM1->SPI.INTFLAG.bit.RXC);
-        if (0xff == SERCOM1->SPI.DATA.bit.DATA)
-            return;
-    }
-
-    static const unsigned char all_ones = 0xff;
-    DmacDescriptor * descriptor_write = ((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_WRITE;
-    descriptor_write->BTCNT.reg = CARD_BUSY_BYTES_PER_CHECK;
-    descriptor_write->SRCADDR.reg = (size_t)&all_ones;
-    descriptor_write->BTCTRL.bit.SRCINC = 0;
-    descriptor_write->BTCTRL.bit.BLOCKACT = DMAC_BTCTRL_BLOCKACT_NOACT_Val;
-
-    DmacDescriptor * descriptor_read = ((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_READ;
-    descriptor_read->BTCNT.reg = CARD_BUSY_BYTES_PER_CHECK;
-    descriptor_read->DSTADDR.reg = (size_t)&card_busy_result;
-    descriptor_read->BTCTRL.bit.DSTINC = 0; /* read to the same byte every time */
-
-    /* clear prior interrupt flags */
-    DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
-    DMAC->Channel[IDMA_SPI_READ].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
-
-    /* disable interrupt for write channel, enable for read channel */
-    DMAC->Channel[IDMA_SPI_WRITE].CHINTENCLR.bit.TCMPL = 1;
-    DMAC->Channel[IDMA_SPI_READ].CHINTENSET.bit.TCMPL = 1;
-
-    waiting_while_card_busy = 1;
-
-    /* ensure changes to descriptors have propagated to sram prior to enabling peripheral */
-    __DSB();
-
-    /* setting this does nothing yet */
-    DMAC->Channel[IDMA_SPI_READ].CHCTRLA.bit.ENABLE = 1;
 
     /* setting this starts the transaction */
     DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
@@ -296,8 +253,6 @@ void DMAC_2_Handler(void) {
         card_write_response = SERCOM1->SPI.DATA.bit.DATA;
 
         writing_a_block = 0;
-
-        spi_wait_while_card_busy_nonblocking_start();
     }
 }
 
@@ -307,16 +262,6 @@ void DMAC_3_Handler(void) {
     DMAC->Channel[IDMA_SPI_READ].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
 
     spi_busy_accessing_sram = 0;
-
-    if (waiting_while_card_busy) {
-        if (0xff == card_busy_result)
-            waiting_while_card_busy = 0;
-        else {
-            /* need to try again */
-            DMAC->Channel[IDMA_SPI_READ].CHCTRLA.bit.ENABLE = 1;
-            DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
-        }
-    }
 }
 
 static void spi_receive_nonblocking_start(void * buf, const size_t count) {
@@ -355,9 +300,35 @@ static void spi_receive_nonblocking_start(void * buf, const size_t count) {
     DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
 }
 
-int spi_sd_flush_write(void) {
-    while (__DSB(), writing_a_block || waiting_while_card_busy) yield();
+static char waiting_for_card_ready = 0;
 
+void SERCOM1_2_Handler(void) {
+    SERCOM1->SPI.INTFLAG.reg = (SERCOM_SPI_INTFLAG_Type) { .bit.RXC = 1 }.reg;
+
+    if (waiting_for_card_ready) {
+        if (SERCOM1->SPI.DATA.bit.DATA != 0xff)
+            SERCOM1->SPI.DATA.bit.DATA = 0xff;
+        else {
+            waiting_for_card_ready = 0;
+            SERCOM1->SPI.INTENCLR.reg = (SERCOM_SPI_INTENSET_Type) { .bit.RXC = 1 }.reg;
+        }
+    }
+}
+
+static void wait_for_card_ready(void) {
+    waiting_for_card_ready = 1;
+
+    SERCOM1->SPI.CTRLB.bit.RXEN = 1;
+    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+
+    SERCOM1->SPI.INTENSET.reg = (SERCOM_SPI_INTENSET_Type) { .bit.RXC = 1 }.reg;
+    SERCOM1->SPI.DATA.bit.DATA = 0xff;
+    while (__DSB(), waiting_for_card_ready) yield();
+}
+
+int spi_sd_flush_write(void) {
+    while (__DSB(), writing_a_block) yield();
+    wait_for_card_ready();
     uint16_t response = card_write_response;
 //    if (response != 0xE5) fprintf(stderr, "%s(%d): response 0x%2.2X\n", __func__, __LINE__, response);
 
@@ -431,12 +402,6 @@ static uint8_t command_and_r1_response(const uint8_t cmd, const uint32_t arg) {
     if (12 == cmd) spi_send((unsigned char[1]) { 0xff }, 1);
 
     return r1_response();
-}
-
-static void wait_for_card_ready(void) {
-    uint8_t result;
-    do spi_receive(&result, 1);
-    while (0xFF != result);
 }
 
 static int rx_data_block(unsigned char * buf) {
