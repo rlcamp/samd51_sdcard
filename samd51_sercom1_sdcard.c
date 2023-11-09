@@ -289,7 +289,7 @@ static void spi_send(const void * buf, const size_t size) {
     SERCOM1->SPI.CTRLB.bit.RXEN = 0;
     while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
 
-    if (size <= 6)
+    if (size <= 10)
         for (size_t ibyte = 0; ibyte < size; ibyte++) {
             while (!SERCOM1->SPI.INTFLAG.bit.DRE);
             SERCOM1->SPI.DATA.bit.DATA = ((const char *)buf)[ibyte];
