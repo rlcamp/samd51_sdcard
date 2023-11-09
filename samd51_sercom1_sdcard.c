@@ -19,7 +19,6 @@ static_assert(((F_CPU / (2U * BAUD_RATE_FAST) - 1U) + 1U) * (2U * BAUD_RATE_FAST
               "baud rate not possible");
 
 #define IDMA_SPI_WRITE 2
-#define IDMA_SPI_READ 3
 
 /* smaller values use more cpu while waiting but have lower latency */
 #define CARD_BUSY_BYTES_PER_CHECK 16
@@ -61,38 +60,12 @@ static void spi_dma_init(void) {
     DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.TRIGACT = DMAC_CHCTRLA_TRIGACT_BURST_Val; /* transfer one byte when triggered */
     DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.BURSTLEN = DMAC_CHCTRLA_BURSTLEN_SINGLE_Val; /* one burst = one beat */
 
-    /* reset channel */
-    DMAC->Channel[IDMA_SPI_READ].CHCTRLA.bit.ENABLE = 0;
-    DMAC->Channel[IDMA_SPI_READ].CHCTRLA.bit.SWRST = 1;
-
-    /* clear sw trigger */
-    DMAC->SWTRIGCTRL.reg &= ~(1 << IDMA_SPI_READ);
-
-    static_assert(3 == IDMA_SPI_READ, "dmac channel isr mismatch");
-    NVIC_EnableIRQ(DMAC_3_IRQn);
-    NVIC_SetPriority(DMAC_3_IRQn, (1 << __NVIC_PRIO_BITS) - 1);
-
-    DMAC->Channel[IDMA_SPI_READ].CHCTRLA.bit.RUNSTDBY = 1;
-    DMAC->Channel[IDMA_SPI_READ].CHCTRLA.bit.TRIGSRC = 0x06; /* trigger when sercom1 has received one new byte */
-    DMAC->Channel[IDMA_SPI_READ].CHCTRLA.bit.TRIGACT = DMAC_CHCTRLA_TRIGACT_BURST_Val; /* transfer one byte when triggered */
-    DMAC->Channel[IDMA_SPI_READ].CHCTRLA.bit.BURSTLEN = DMAC_CHCTRLA_BURSTLEN_SINGLE_Val; /* one burst = one beat */
-
     /* initialize unchanging properties of write descriptor */
     *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_WRITE) = (DmacDescriptor) {
         .DSTADDR.reg = (size_t)&(SERCOM1->SPI.DATA.reg),
         .BTCTRL = {
             .bit.VALID = 1,
             .bit.DSTINC = 0, /* write to the same register every time */
-        }
-    };
-
-    /* initialize unchanging properties of write descriptor */
-    *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_READ) = (DmacDescriptor) {
-        .SRCADDR.reg = (size_t)&(SERCOM1->SPI.DATA.reg),
-        .BTCTRL = {
-            .bit.VALID = 1,
-            .bit.SRCINC = 0, /* read from the same register every time */
-            .bit.BLOCKACT = DMAC_BTCTRL_BLOCKACT_INT_Val, /* fire an interrupt */
         }
     };
 
@@ -183,7 +156,7 @@ static void spi_init(unsigned long baudrate) {
     while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
 }
 
-static volatile char spi_busy_accessing_sram = 0;
+static char spi_busy_accessing_sram = 0;
 static char writing_a_block;
 static unsigned char card_write_response;
 
@@ -195,16 +168,10 @@ static void spi_send_nonblocking_start(const void * buf, const size_t count) {
     descriptor_write->BTCTRL.bit.BLOCKACT = DMAC_BTCTRL_BLOCKACT_INT_Val;
 
     /* clear pending interrupt from before */
-    DMAC->Channel[IDMA_SPI_READ].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
-
-    /* clear pending interrupt from before */
     DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
 
     /* enable interrupt on write completion */
     DMAC->Channel[IDMA_SPI_WRITE].CHINTENSET.bit.TCMPL = 1;
-
-    /* disable interrupt on read completion */
-    DMAC->Channel[IDMA_SPI_READ].CHINTENCLR.bit.TCMPL = 1;
 
     /* reset the crc */
     DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0 }.reg;
@@ -260,56 +227,19 @@ void DMAC_2_Handler(void) {
     }
 }
 
-static_assert(3 == IDMA_SPI_READ, "dmac channel isr mismatch");
-void DMAC_3_Handler(void) {
-    if (!(DMAC->Channel[IDMA_SPI_READ].CHINTFLAG.bit.TCMPL)) return;
-    DMAC->Channel[IDMA_SPI_READ].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
-
-    spi_busy_accessing_sram = 0;
-}
-
-static void spi_receive_nonblocking_start(void * buf, const size_t count) {
-    SERCOM1->SPI.CTRLB.bit.RXEN = 1;
-    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
-
-    static const unsigned char all_ones = 0xff;
-    DmacDescriptor * descriptor_write = ((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_WRITE;
-    descriptor_write->BTCNT.reg = count;
-    descriptor_write->SRCADDR.reg = (size_t)&all_ones;
-    descriptor_write->BTCTRL.bit.SRCINC = 0;
-    descriptor_write->BTCTRL.bit.BLOCKACT = DMAC_BTCTRL_BLOCKACT_NOACT_Val;
-
-    DmacDescriptor * descriptor_read = ((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_READ;
-    descriptor_read->BTCNT.reg = count;
-    descriptor_read->DSTADDR.reg = ((size_t)buf) + count,
-    descriptor_read->BTCTRL.bit.DSTINC = 1; /* read to the same byte every time */
-
-    /* clear prior interrupt flags */
-    DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
-    DMAC->Channel[IDMA_SPI_READ].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
-
-    /* disable interrupt for write channel, enable for read channel */
-    DMAC->Channel[IDMA_SPI_WRITE].CHINTENCLR.bit.TCMPL = 1;
-    DMAC->Channel[IDMA_SPI_READ].CHINTENSET.bit.TCMPL = 1;
-
-    spi_busy_accessing_sram = 1;
-
-    /* ensure changes to descriptors have propagated to sram prior to enabling peripheral */
-    __DSB();
-
-    /* setting this does nothing yet */
-    DMAC->Channel[IDMA_SPI_READ].CHCTRLA.bit.ENABLE = 1;
-
-    /* setting this starts the transaction */
-    DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
-}
-
 static char waiting_for_card_ready = 0;
+static uint32_t * reading_a_block_cursor = NULL, * reading_a_block_stop = NULL;
 
 void SERCOM1_2_Handler(void) {
-    SERCOM1->SPI.INTFLAG.reg = (SERCOM_SPI_INTFLAG_Type) { .bit.RXC = 1 }.reg;
-
-    if (waiting_for_card_ready) {
+    if (reading_a_block_stop) {
+        *(reading_a_block_cursor++) = SERCOM1->SPI.DATA.bit.DATA;
+        if (reading_a_block_cursor != reading_a_block_stop)
+            SERCOM1->SPI.DATA.bit.DATA = 0xffffffff;
+        else {
+            reading_a_block_stop = NULL;
+            SERCOM1->SPI.INTENCLR.reg = (SERCOM_SPI_INTENCLR_Type) { .bit.RXC = 1 }.reg;
+        }
+    } else {
         if (SERCOM1->SPI.DATA.bit.DATA != 0xff)
             SERCOM1->SPI.DATA.bit.DATA = 0xff;
         else {
@@ -321,17 +251,18 @@ void SERCOM1_2_Handler(void) {
 
 static void wait_for_card_ready(void) {
     waiting_for_card_ready = 1;
+    __DSB();
 
     SERCOM1->SPI.CTRLB.bit.RXEN = 1;
     while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
 
     SERCOM1->SPI.INTENSET.reg = (SERCOM_SPI_INTENSET_Type) { .bit.RXC = 1 }.reg;
     SERCOM1->SPI.DATA.bit.DATA = 0xff;
-    while (__DSB(), waiting_for_card_ready) yield();
+    while (*(volatile char *)&waiting_for_card_ready) yield();
 }
 
 int spi_sd_flush_write(void) {
-    while (__DSB(), writing_a_block) yield();
+    while (*(volatile char *)&writing_a_block) yield();
     wait_for_card_ready();
     uint16_t response = card_write_response;
 //    if (response != 0xE5) fprintf(stderr, "%s(%d): response 0x%2.2X\n", __func__, __LINE__, response);
@@ -351,7 +282,7 @@ void spi_sd_start_writing_a_block(const void * buf) {
 }
 
 static void wait_while_spi_accessing_sram(void) {
-    while (__DSB(), spi_busy_accessing_sram) yield();
+    while (*(volatile char *)&spi_busy_accessing_sram) yield();
 }
 
 static void spi_send(const void * buf, const size_t size) {
@@ -415,30 +346,6 @@ static uint8_t command_and_r1_response(const uint8_t cmd, const uint32_t arg) {
     if (12 == cmd) spi_send((unsigned char[1]) { 0xff }, 1);
 
     return r1_response();
-}
-
-static int rx_data_block(unsigned char * buf) {
-    SERCOM1->SPI.CTRLB.bit.RXEN = 1;
-    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
-
-    uint8_t result;
-    /* this can loop for a while */
-    do result = spi_receive_one_byte_with_rx_enabled();
-    while (0xFF == result);
-
-    /* when we break out of the above loop, we've read the Data Token byte */
-    if (0xFE != result) return -1;
-
-    /* read the 512 bytes with MOSI held high */
-    spi_receive_nonblocking_start(buf, 512);
-    wait_while_spi_accessing_sram();
-
-    /* read and discard two crc bytes */
-    uint16_t crc = spi_receive_one_byte_with_rx_enabled() << 8;
-    crc |= spi_receive_one_byte_with_rx_enabled();
-
-//    fprintf(stderr, "%s: 0x%4.4X\n", __func__, crc);
-    return 0;
 }
 
 void spi_sd_init(void) {
@@ -564,12 +471,51 @@ int spi_sd_read_blocks(void * buf, unsigned long blocks, unsigned long long bloc
     /* send cmd17 or cmd18 */
     if (command_and_r1_response(blocks > 1 ? 18 : 17, block_address) != 0) return -1;
 
+    SERCOM1->SPI.CTRLB.bit.RXEN = 1;
+    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+
     /* clock out the response in 1 + 512 + 2 byte blocks */
-    for (size_t iblock = 0; iblock < blocks; iblock++)
-        if (-1 == rx_data_block(((unsigned char *)buf) + 512 * iblock)) {
+    for (size_t iblock = 0; iblock < blocks; iblock++) {
+        uint8_t result;
+        /* this can loop for a while */
+        do result = spi_receive_one_byte_with_rx_enabled();
+        while (0xFF == result);
+
+        /* when we break out of the above loop, we've read the Data Token byte */
+        if (0xFE != result) {
             cs_high();
             return -1;
         }
+
+        SERCOM1->SPI.CTRLA.bit.ENABLE = 0;
+        while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
+
+        SERCOM1->SPI.CTRLC.bit.DATA32B = 1;
+
+        SERCOM1->SPI.CTRLA.bit.ENABLE = 1;
+        while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
+
+        reading_a_block_cursor = (void *)((unsigned char *)buf) + 512 * iblock;
+        reading_a_block_stop = reading_a_block_cursor + (512 / 4);
+        __DSB();
+
+        SERCOM1->SPI.INTENSET.reg = (SERCOM_SPI_INTENSET_Type) { .bit.RXC = 1 }.reg;
+        SERCOM1->SPI.DATA.bit.DATA = 0xffffffff;
+
+        while (*(volatile uint32_t **)&reading_a_block_stop) yield();
+
+        SERCOM1->SPI.CTRLA.bit.ENABLE = 0;
+        while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
+
+        SERCOM1->SPI.CTRLC.bit.DATA32B = 0;
+
+        SERCOM1->SPI.CTRLA.bit.ENABLE = 1;
+        while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
+
+        /* read and discard two crc bytes */
+        uint16_t crc = spi_receive_one_byte_with_rx_enabled() << 8;
+        crc |= spi_receive_one_byte_with_rx_enabled();
+    }
 
     /* if we sent cmd18, send cmd12 to stop */
     if (blocks > 1) command_and_r1_response(12, 0);
