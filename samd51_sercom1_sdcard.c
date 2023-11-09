@@ -18,8 +18,8 @@
 static_assert(((F_CPU / (2U * BAUD_RATE_FAST) - 1U) + 1U) * (2U * BAUD_RATE_FAST) == F_CPU,
               "baud rate not possible");
 
-#define ICHANNEL_SPI_WRITE 2
-#define ICHANNEL_SPI_READ 3
+#define IDMA_SPI_WRITE 2
+#define IDMA_SPI_READ 3
 
 /* smaller values use more cpu while waiting but have lower latency */
 #define CARD_BUSY_BYTES_PER_CHECK 16
@@ -46,39 +46,39 @@ static void spi_dma_init(void) {
     }
 
     /* reset channel */
-    DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.ENABLE = 0;
-    DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.SWRST = 1;
+    DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.ENABLE = 0;
+    DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.SWRST = 1;
 
     /* clear sw trigger */
-    DMAC->SWTRIGCTRL.reg &= ~(1 << ICHANNEL_SPI_WRITE);
+    DMAC->SWTRIGCTRL.reg &= ~(1 << IDMA_SPI_WRITE);
 
     NVIC_EnableIRQ(DMAC_2_IRQn);
     NVIC_SetPriority(DMAC_2_IRQn, (1 << __NVIC_PRIO_BITS) - 1);
-    static_assert(2 == ICHANNEL_SPI_WRITE, "dmac channel isr mismatch");
+    static_assert(2 == IDMA_SPI_WRITE, "dmac channel isr mismatch");
 
-    DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.RUNSTDBY = 1;
-    DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.TRIGSRC = 0x07; /* trigger when sercom1 is ready to send a new byte */
-    DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.TRIGACT = DMAC_CHCTRLA_TRIGACT_BURST_Val; /* transfer one byte when triggered */
-    DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.BURSTLEN = DMAC_CHCTRLA_BURSTLEN_SINGLE_Val; /* one burst = one beat */
+    DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.RUNSTDBY = 1;
+    DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.TRIGSRC = 0x07; /* trigger when sercom1 is ready to send a new byte */
+    DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.TRIGACT = DMAC_CHCTRLA_TRIGACT_BURST_Val; /* transfer one byte when triggered */
+    DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.BURSTLEN = DMAC_CHCTRLA_BURSTLEN_SINGLE_Val; /* one burst = one beat */
 
     /* reset channel */
-    DMAC->Channel[ICHANNEL_SPI_READ].CHCTRLA.bit.ENABLE = 0;
-    DMAC->Channel[ICHANNEL_SPI_READ].CHCTRLA.bit.SWRST = 1;
+    DMAC->Channel[IDMA_SPI_READ].CHCTRLA.bit.ENABLE = 0;
+    DMAC->Channel[IDMA_SPI_READ].CHCTRLA.bit.SWRST = 1;
 
     /* clear sw trigger */
-    DMAC->SWTRIGCTRL.reg &= ~(1 << ICHANNEL_SPI_READ);
+    DMAC->SWTRIGCTRL.reg &= ~(1 << IDMA_SPI_READ);
 
-    static_assert(3 == ICHANNEL_SPI_READ, "dmac channel isr mismatch");
+    static_assert(3 == IDMA_SPI_READ, "dmac channel isr mismatch");
     NVIC_EnableIRQ(DMAC_3_IRQn);
     NVIC_SetPriority(DMAC_3_IRQn, (1 << __NVIC_PRIO_BITS) - 1);
 
-    DMAC->Channel[ICHANNEL_SPI_READ].CHCTRLA.bit.RUNSTDBY = 1;
-    DMAC->Channel[ICHANNEL_SPI_READ].CHCTRLA.bit.TRIGSRC = 0x06; /* trigger when sercom1 has received one new byte */
-    DMAC->Channel[ICHANNEL_SPI_READ].CHCTRLA.bit.TRIGACT = DMAC_CHCTRLA_TRIGACT_BURST_Val; /* transfer one byte when triggered */
-    DMAC->Channel[ICHANNEL_SPI_READ].CHCTRLA.bit.BURSTLEN = DMAC_CHCTRLA_BURSTLEN_SINGLE_Val; /* one burst = one beat */
+    DMAC->Channel[IDMA_SPI_READ].CHCTRLA.bit.RUNSTDBY = 1;
+    DMAC->Channel[IDMA_SPI_READ].CHCTRLA.bit.TRIGSRC = 0x06; /* trigger when sercom1 has received one new byte */
+    DMAC->Channel[IDMA_SPI_READ].CHCTRLA.bit.TRIGACT = DMAC_CHCTRLA_TRIGACT_BURST_Val; /* transfer one byte when triggered */
+    DMAC->Channel[IDMA_SPI_READ].CHCTRLA.bit.BURSTLEN = DMAC_CHCTRLA_BURSTLEN_SINGLE_Val; /* one burst = one beat */
 
     /* initialize unchanging properties of write descriptor */
-    *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + ICHANNEL_SPI_WRITE) = (DmacDescriptor) {
+    *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_WRITE) = (DmacDescriptor) {
         .DSTADDR.reg = (size_t)&(SERCOM1->SPI.DATA.reg),
         .BTCTRL = {
             .bit.VALID = 1,
@@ -87,7 +87,7 @@ static void spi_dma_init(void) {
     };
 
     /* initialize unchanging properties of write descriptor */
-    *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + ICHANNEL_SPI_READ) = (DmacDescriptor) {
+    *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_READ) = (DmacDescriptor) {
         .SRCADDR.reg = (size_t)&(SERCOM1->SPI.DATA.reg),
         .BTCTRL = {
             .bit.VALID = 1,
@@ -187,28 +187,28 @@ static char writing_a_block;
 static unsigned char card_write_response;
 
 static void spi_send_nonblocking_start(const void * buf, const size_t count) {
-    DmacDescriptor * descriptor_write = ((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + ICHANNEL_SPI_WRITE;
+    DmacDescriptor * descriptor_write = ((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_WRITE;
     descriptor_write->BTCNT.reg = count;
     descriptor_write->SRCADDR.reg = ((size_t)buf) + count;
     descriptor_write->BTCTRL.bit.SRCINC = 1;
     descriptor_write->BTCTRL.bit.BLOCKACT = DMAC_BTCTRL_BLOCKACT_INT_Val;
 
     /* clear pending interrupt from before */
-    DMAC->Channel[ICHANNEL_SPI_READ].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
+    DMAC->Channel[IDMA_SPI_READ].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
 
     /* clear pending interrupt from before */
-    DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
+    DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
 
     /* enable interrupt on write completion */
-    DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTENSET.bit.TCMPL = 1;
+    DMAC->Channel[IDMA_SPI_WRITE].CHINTENSET.bit.TCMPL = 1;
 
     /* disable interrupt on read completion */
-    DMAC->Channel[ICHANNEL_SPI_READ].CHINTENCLR.bit.TCMPL = 1;
+    DMAC->Channel[IDMA_SPI_READ].CHINTENCLR.bit.TCMPL = 1;
 
     /* reset the crc */
     DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0 }.reg;
     DMAC->CRCCHKSUM.reg = 0;
-    DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0x20 + ICHANNEL_SPI_WRITE }.reg;
+    DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0x20 + IDMA_SPI_WRITE }.reg;
 
     spi_busy_accessing_sram = 1;
 
@@ -216,7 +216,7 @@ static void spi_send_nonblocking_start(const void * buf, const size_t count) {
     __DSB();
 
     /* setting this starts the transaction */
-    DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
+    DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
 }
 
 static void spi_wait_while_card_busy_nonblocking_start(void) {
@@ -232,24 +232,24 @@ static void spi_wait_while_card_busy_nonblocking_start(void) {
     }
 
     static const unsigned char all_ones = 0xff;
-    DmacDescriptor * descriptor_write = ((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + ICHANNEL_SPI_WRITE;
+    DmacDescriptor * descriptor_write = ((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_WRITE;
     descriptor_write->BTCNT.reg = CARD_BUSY_BYTES_PER_CHECK;
     descriptor_write->SRCADDR.reg = (size_t)&all_ones;
     descriptor_write->BTCTRL.bit.SRCINC = 0;
     descriptor_write->BTCTRL.bit.BLOCKACT = DMAC_BTCTRL_BLOCKACT_NOACT_Val;
 
-    DmacDescriptor * descriptor_read = ((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + ICHANNEL_SPI_READ;
+    DmacDescriptor * descriptor_read = ((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_READ;
     descriptor_read->BTCNT.reg = CARD_BUSY_BYTES_PER_CHECK;
     descriptor_read->DSTADDR.reg = (size_t)&card_busy_result;
     descriptor_read->BTCTRL.bit.DSTINC = 0; /* read to the same byte every time */
 
     /* clear prior interrupt flags */
-    DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
-    DMAC->Channel[ICHANNEL_SPI_READ].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
+    DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
+    DMAC->Channel[IDMA_SPI_READ].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
 
     /* disable interrupt for write channel, enable for read channel */
-    DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTENCLR.bit.TCMPL = 1;
-    DMAC->Channel[ICHANNEL_SPI_READ].CHINTENSET.bit.TCMPL = 1;
+    DMAC->Channel[IDMA_SPI_WRITE].CHINTENCLR.bit.TCMPL = 1;
+    DMAC->Channel[IDMA_SPI_READ].CHINTENSET.bit.TCMPL = 1;
 
     waiting_while_card_busy = 1;
 
@@ -257,16 +257,16 @@ static void spi_wait_while_card_busy_nonblocking_start(void) {
     __DSB();
 
     /* setting this does nothing yet */
-    DMAC->Channel[ICHANNEL_SPI_READ].CHCTRLA.bit.ENABLE = 1;
+    DMAC->Channel[IDMA_SPI_READ].CHCTRLA.bit.ENABLE = 1;
 
     /* setting this starts the transaction */
-    DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
+    DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
 }
 
-static_assert(2 == ICHANNEL_SPI_WRITE, "dmac channel isr mismatch");
+static_assert(2 == IDMA_SPI_WRITE, "dmac channel isr mismatch");
 void DMAC_2_Handler(void) {
-    if (!(DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.bit.TCMPL)) return;
-    DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
+    if (!(DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.bit.TCMPL)) return;
+    DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
 
     spi_busy_accessing_sram = 0;
 
@@ -301,10 +301,10 @@ void DMAC_2_Handler(void) {
     }
 }
 
-static_assert(3 == ICHANNEL_SPI_READ, "dmac channel isr mismatch");
+static_assert(3 == IDMA_SPI_READ, "dmac channel isr mismatch");
 void DMAC_3_Handler(void) {
-    if (!(DMAC->Channel[ICHANNEL_SPI_READ].CHINTFLAG.bit.TCMPL)) return;
-    DMAC->Channel[ICHANNEL_SPI_READ].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
+    if (!(DMAC->Channel[IDMA_SPI_READ].CHINTFLAG.bit.TCMPL)) return;
+    DMAC->Channel[IDMA_SPI_READ].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
 
     spi_busy_accessing_sram = 0;
 
@@ -313,8 +313,8 @@ void DMAC_3_Handler(void) {
             waiting_while_card_busy = 0;
         else {
             /* need to try again */
-            DMAC->Channel[ICHANNEL_SPI_READ].CHCTRLA.bit.ENABLE = 1;
-            DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
+            DMAC->Channel[IDMA_SPI_READ].CHCTRLA.bit.ENABLE = 1;
+            DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
         }
     }
 }
@@ -324,24 +324,24 @@ static void spi_receive_nonblocking_start(void * buf, const size_t count) {
     while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
 
     static const unsigned char all_ones = 0xff;
-    DmacDescriptor * descriptor_write = ((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + ICHANNEL_SPI_WRITE;
+    DmacDescriptor * descriptor_write = ((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_WRITE;
     descriptor_write->BTCNT.reg = count;
     descriptor_write->SRCADDR.reg = (size_t)&all_ones;
     descriptor_write->BTCTRL.bit.SRCINC = 0;
     descriptor_write->BTCTRL.bit.BLOCKACT = DMAC_BTCTRL_BLOCKACT_NOACT_Val;
 
-    DmacDescriptor * descriptor_read = ((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + ICHANNEL_SPI_READ;
+    DmacDescriptor * descriptor_read = ((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_READ;
     descriptor_read->BTCNT.reg = count;
     descriptor_read->DSTADDR.reg = ((size_t)buf) + count,
     descriptor_read->BTCTRL.bit.DSTINC = 1; /* read to the same byte every time */
 
     /* clear prior interrupt flags */
-    DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
-    DMAC->Channel[ICHANNEL_SPI_READ].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
+    DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
+    DMAC->Channel[IDMA_SPI_READ].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
 
     /* disable interrupt for write channel, enable for read channel */
-    DMAC->Channel[ICHANNEL_SPI_WRITE].CHINTENCLR.bit.TCMPL = 1;
-    DMAC->Channel[ICHANNEL_SPI_READ].CHINTENSET.bit.TCMPL = 1;
+    DMAC->Channel[IDMA_SPI_WRITE].CHINTENCLR.bit.TCMPL = 1;
+    DMAC->Channel[IDMA_SPI_READ].CHINTENSET.bit.TCMPL = 1;
 
     spi_busy_accessing_sram = 1;
 
@@ -349,10 +349,10 @@ static void spi_receive_nonblocking_start(void * buf, const size_t count) {
     __DSB();
 
     /* setting this does nothing yet */
-    DMAC->Channel[ICHANNEL_SPI_READ].CHCTRLA.bit.ENABLE = 1;
+    DMAC->Channel[IDMA_SPI_READ].CHCTRLA.bit.ENABLE = 1;
 
     /* setting this starts the transaction */
-    DMAC->Channel[ICHANNEL_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
+    DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
 }
 
 int spi_sd_flush_write(void) {
