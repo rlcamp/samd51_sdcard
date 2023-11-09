@@ -220,6 +220,12 @@ static void spi_send_nonblocking_start(const void * buf, const size_t count) {
     DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
 }
 
+static uint32_t spi_receive_one_byte_with_rx_enabled(void) {
+    SERCOM1->SPI.DATA.bit.DATA = 0xff;
+    while (!SERCOM1->SPI.INTFLAG.bit.RXC);
+    return SERCOM1->SPI.DATA.bit.DATA;
+}
+
 static_assert(2 == IDMA_SPI_WRITE, "dmac channel isr mismatch");
 void DMAC_2_Handler(void) {
     if (!(DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.bit.TCMPL)) return;
@@ -248,9 +254,7 @@ void DMAC_2_Handler(void) {
         while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
 
         /* blocking receive of one byte */
-        SERCOM1->SPI.DATA.bit.DATA = 0xff;
-        while (!SERCOM1->SPI.INTFLAG.bit.RXC);
-        card_write_response = SERCOM1->SPI.DATA.bit.DATA;
+        card_write_response = spi_receive_one_byte_with_rx_enabled();
 
         writing_a_block = 0;
     }
@@ -350,12 +354,6 @@ static void wait_while_spi_accessing_sram(void) {
     while (__DSB(), spi_busy_accessing_sram) yield();
 }
 
-static void spi_receive(void * buf, const size_t size) {
-    spi_receive_nonblocking_start(buf, size);
-    wait_while_spi_accessing_sram();
-    /* TODO: is a wait on TXC needed here or not */
-}
-
 static void spi_send(const void * buf, const size_t size) {
     SERCOM1->SPI.CTRLB.bit.RXEN = 0;
     while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
@@ -366,14 +364,22 @@ static void spi_send(const void * buf, const size_t size) {
 }
 
 static uint32_t spi_receive_uint32(void) {
-    unsigned char response[4] = { 0xFF, 0xFF, 0xFF, 0xFF };
-    spi_receive(response, sizeof(response));
-    return (response[0] << 24) | (response[1] << 16) | (response[2] << 8) | response[3];
+    SERCOM1->SPI.CTRLB.bit.RXEN = 1;
+    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+
+    uint32_t response = spi_receive_one_byte_with_rx_enabled() << 24;
+    response |= spi_receive_one_byte_with_rx_enabled() << 16;
+    response |= spi_receive_one_byte_with_rx_enabled() << 8;
+    response |= spi_receive_one_byte_with_rx_enabled();
+    return response;
 }
 
 static uint8_t r1_response(void) {
-    uint8_t result = 0xFF, attempts = 0;
-    do spi_receive(&result, 1);
+    SERCOM1->SPI.CTRLB.bit.RXEN = 1;
+    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+
+    uint8_t result, attempts = 0;
+    do result = spi_receive_one_byte_with_rx_enabled();
     while (0xFF == result && attempts++ < 8);
     return result;
 }
@@ -405,21 +411,25 @@ static uint8_t command_and_r1_response(const uint8_t cmd, const uint32_t arg) {
 }
 
 static int rx_data_block(unsigned char * buf) {
+    SERCOM1->SPI.CTRLB.bit.RXEN = 1;
+    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+
+    uint8_t result;
     /* this can loop for a while */
-    uint8_t result = 0xFF;
-    do spi_receive(&result, 1);
+    do result = spi_receive_one_byte_with_rx_enabled();
     while (0xFF == result);
 
     /* when we break out of the above loop, we've read the Data Token byte */
     if (0xFE != result) return -1;
 
     /* read the 512 bytes with MOSI held high */
-    spi_receive(buf, 512);
+    spi_receive_nonblocking_start(buf, 512);
+    wait_while_spi_accessing_sram();
+    /* TODO: is a wait on TXC needed here or not */
 
     /* read and discard two crc bytes */
-    unsigned char crcbuf[2];
-    spi_receive(crcbuf, 2);
-//    const uint16_t crc = crcbuf[0] << 8 | crcbuf[1];
+    uint16_t crc = spi_receive_one_byte_with_rx_enabled() << 8;
+    crc |= spi_receive_one_byte_with_rx_enabled();
 
 //    fprintf(stderr, "%s: 0x%4.4X\n", __func__, crc);
     return 0;
