@@ -156,7 +156,6 @@ static void spi_init(unsigned long baudrate) {
     while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
 }
 
-static char spi_busy_accessing_sram = 0;
 static char writing_a_block;
 static unsigned char card_write_response;
 
@@ -178,8 +177,6 @@ static void spi_send_nonblocking_start(const void * buf, const size_t count) {
     DMAC->CRCCHKSUM.reg = 0;
     DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0x20 + IDMA_SPI_WRITE }.reg;
 
-    spi_busy_accessing_sram = 1;
-
     /* ensure changes to descriptors have propagated to sram prior to enabling peripheral */
     __DSB();
 
@@ -198,33 +195,29 @@ void DMAC_2_Handler(void) {
     if (!(DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.bit.TCMPL)) return;
     DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
 
-    spi_busy_accessing_sram = 0;
+    /* grab the CRC that the DMAC calculated on the outgoing 512 bytes... */
+    while (DMAC->CRCSTATUS.bit.CRCBUSY);
+    const uint16_t crc = DMAC->CRCCHKSUM.reg;
 
-    if (writing_a_block) {
-        /* grab the CRC that the DMAC calculated on the outgoing 512 bytes... */
-        while (DMAC->CRCSTATUS.bit.CRCBUSY);
-        const uint16_t crc = DMAC->CRCCHKSUM.reg;
+    /* TODO: somewhat hack fix, might not be the actual fix */
+    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
 
-        /* TODO: somewhat hack fix, might not be the actual fix */
-        while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+    /* blocking send of crc */
+    while (!SERCOM1->SPI.INTFLAG.bit.DRE);
+    SERCOM1->SPI.DATA.bit.DATA = (crc >> 8U) & 0xff;
+    while (!SERCOM1->SPI.INTFLAG.bit.DRE);
+    SERCOM1->SPI.DATA.bit.DATA = (crc) & 0xff;
 
-        /* blocking send of crc */
-        while (!SERCOM1->SPI.INTFLAG.bit.DRE);
-        SERCOM1->SPI.DATA.bit.DATA = (crc >> 8U) & 0xff;
-        while (!SERCOM1->SPI.INTFLAG.bit.DRE);
-        SERCOM1->SPI.DATA.bit.DATA = (crc) & 0xff;
+    /* wait for crc to complete sending before enabling rx */
+    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
 
-        /* wait for crc to complete sending before enabling rx */
-        while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+    SERCOM1->SPI.CTRLB.bit.RXEN = 1;
+    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
 
-        SERCOM1->SPI.CTRLB.bit.RXEN = 1;
-        while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+    /* blocking receive of one byte */
+    card_write_response = spi_receive_one_byte_with_rx_enabled();
 
-        /* blocking receive of one byte */
-        card_write_response = spi_receive_one_byte_with_rx_enabled();
-
-        writing_a_block = 0;
-    }
+    writing_a_block = 0;
 }
 
 static char waiting_for_card_ready = 0;
@@ -281,23 +274,15 @@ void spi_sd_start_writing_a_block(const void * buf) {
     spi_send_nonblocking_start(buf, 512);
 }
 
-static void wait_while_spi_accessing_sram(void) {
-    while (*(volatile char *)&spi_busy_accessing_sram) yield();
-}
-
 static void spi_send(const void * buf, const size_t size) {
     SERCOM1->SPI.CTRLB.bit.RXEN = 0;
     while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
 
-    if (size <= 10)
-        for (size_t ibyte = 0; ibyte < size; ibyte++) {
-            while (!SERCOM1->SPI.INTFLAG.bit.DRE);
-            SERCOM1->SPI.DATA.bit.DATA = ((const char *)buf)[ibyte];
-        }
-    else {
-        spi_send_nonblocking_start(buf, size);
-        wait_while_spi_accessing_sram();
+    for (size_t ibyte = 0; ibyte < size; ibyte++) {
+        while (!SERCOM1->SPI.INTFLAG.bit.DRE);
+        SERCOM1->SPI.DATA.bit.DATA = ((const char *)buf)[ibyte];
     }
+
     while (!SERCOM1->SPI.INTFLAG.bit.TXC);
 }
 
