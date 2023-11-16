@@ -27,7 +27,7 @@ static_assert(((F_CPU / (2U * BAUD_RATE_FAST) - 1U) + 1U) * (2U * BAUD_RATE_FAST
 __attribute__((weak, aligned(16))) DmacDescriptor dmac_descriptors[8] = { 0 }, dmac_writeback[8] = { 0 };
 
 extern void yield(void);
-__attribute((weak)) void yield(void) { __DSB(); __WFE(); }
+__attribute((weak)) void yield(void) { }
 
 static void spi_dma_init(void) {
     /* if dma has not yet been initted... */
@@ -115,9 +115,6 @@ static void spi_init(unsigned long baudrate) {
     GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].reg = GCLK_PCHCTRL_GEN_GCLK0 | GCLK_PCHCTRL_CHEN;
     while (!GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].bit.CHEN);
 
-    NVIC_EnableIRQ(SERCOM1_2_IRQn);
-    NVIC_SetPriority(SERCOM1_2_IRQn, (1 << __NVIC_PRIO_BITS) - 1);
-
     /* reset spi peripheral */
     SERCOM1->SPI.CTRLA.bit.SWRST = 1;
     while (SERCOM1->SPI.CTRLA.bit.SWRST || SERCOM1->SPI.SYNCBUSY.bit.SWRST);
@@ -182,7 +179,8 @@ static void spi_send_nonblocking_start(const void * buf, const size_t count) {
     DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
 }
 
-static uint32_t spi_receive_one_byte_with_rx_enabled(void) {
+__attribute((always_inline)) inline
+static uint8_t spi_receive_one_byte_with_rx_enabled(void) {
     SERCOM1->SPI.DATA.bit.DATA = 0xff;
     while (!SERCOM1->SPI.INTFLAG.bit.RXC);
     return SERCOM1->SPI.DATA.bit.DATA;
@@ -216,46 +214,33 @@ void DMAC_2_Handler(void) {
     card_write_response = spi_receive_one_byte_with_rx_enabled();
 
     writing_a_block = 0;
-}
 
-static char waiting_for_card_ready = 0;
-static uint32_t * reading_a_block_cursor = NULL, * reading_a_block_stop = NULL;
-
-void SERCOM1_2_Handler(void) {
-    if (reading_a_block_stop) {
-        *(reading_a_block_cursor++) = SERCOM1->SPI.DATA.bit.DATA;
-        if (reading_a_block_cursor != reading_a_block_stop)
-            SERCOM1->SPI.DATA.bit.DATA = 0xffffffff;
-        else {
-            reading_a_block_stop = NULL;
-            SERCOM1->SPI.INTENCLR.reg = (SERCOM_SPI_INTENCLR_Type) { .bit.RXC = 1 }.reg;
-        }
-    } else {
-        if (SERCOM1->SPI.DATA.bit.DATA != 0xff)
-            SERCOM1->SPI.DATA.bit.DATA = 0xff;
-        else {
-            waiting_for_card_ready = 0;
-            SERCOM1->SPI.INTENCLR.reg = (SERCOM_SPI_INTENSET_Type) { .bit.RXC = 1 }.reg;
-        }
-    }
+    /* arm an321 page 22 fairly strongly suggests this is necessary prior to exception
+     return (or will be on future processors) when the first thing the processor wants
+     to do afterward depends on state changed in the handler */
+    __DSB();
 }
 
 static void wait_for_card_ready(void) {
-    waiting_for_card_ready = 1;
-    __DSB();
-
     SERCOM1->SPI.CTRLB.bit.RXEN = 1;
     while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
 
-    SERCOM1->SPI.INTENSET.reg = (SERCOM_SPI_INTENSET_Type) { .bit.RXC = 1 }.reg;
-    SERCOM1->SPI.DATA.bit.DATA = 0xff;
-    while (*(volatile char *)&waiting_for_card_ready) yield();
+    uint8_t res;
+    do res = spi_receive_one_byte_with_rx_enabled();
+    while (res != 0xff);
 }
 
 int spi_sd_flush_write(void) {
     while (*(volatile char *)&writing_a_block) yield();
+    /* ensure we don't prefetch the below value before the above condition becomes true */
+    __DMB();
+    const uint16_t response = card_write_response;
     wait_for_card_ready();
-    uint16_t response = card_write_response;
+
+    /* assuming we spun on WFE in one of the above, re-raise the event register explicitly,
+     so that caller does not have to assume calling this function may have cleared it */
+    __SEV();
+
 //    if (response != 0xE5) fprintf(stderr, "%s(%d): response 0x%2.2X\n", __func__, __LINE__, response);
 
     return response != 0xE5 ? -1 : 0;
@@ -470,30 +455,9 @@ int spi_sd_read_blocks(void * buf, unsigned long blocks, unsigned long long bloc
             return -1;
         }
 
-        SERCOM1->SPI.CTRLA.bit.ENABLE = 0;
-        while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
-
-        SERCOM1->SPI.CTRLC.bit.DATA32B = 1;
-
-        SERCOM1->SPI.CTRLA.bit.ENABLE = 1;
-        while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
-
-        reading_a_block_cursor = (void *)((unsigned char *)buf) + 512 * iblock;
-        reading_a_block_stop = reading_a_block_cursor + (512 / 4);
-        __DSB();
-
-        SERCOM1->SPI.INTENSET.reg = (SERCOM_SPI_INTENSET_Type) { .bit.RXC = 1 }.reg;
-        SERCOM1->SPI.DATA.bit.DATA = 0xffffffff;
-
-        while (*(volatile uint32_t **)&reading_a_block_stop) yield();
-
-        SERCOM1->SPI.CTRLA.bit.ENABLE = 0;
-        while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
-
-        SERCOM1->SPI.CTRLC.bit.DATA32B = 0;
-
-        SERCOM1->SPI.CTRLA.bit.ENABLE = 1;
-        while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
+        unsigned char * restrict const block = ((unsigned char *)buf) + 512 * iblock;
+        for (size_t ibyte = 0; ibyte < 512; ibyte++)
+            block[ibyte] = spi_receive_one_byte_with_rx_enabled();
 
         /* read and discard two crc bytes */
         uint16_t crc = spi_receive_one_byte_with_rx_enabled() << 8;
@@ -560,8 +524,8 @@ int spi_sd_write_blocks(const void * buf, const unsigned long blocks, const unsi
     if (-1 == spi_sd_write_blocks_start(block_address))
         return -1;
 
-    for (const unsigned char * c = buf, * s = c + 512 * blocks; c < s; c += 512) {
-        spi_sd_start_writing_a_block(c);
+    for (size_t iblock = 0; iblock < blocks; iblock++) {
+        spi_sd_start_writing_a_block((void *)((unsigned char *)buf + 512 * iblock));
 
         /* this will block, but will internally call yield() and __WFI() */
         if (-1 == spi_sd_flush_write()) return -1;
