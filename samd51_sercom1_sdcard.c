@@ -89,10 +89,30 @@ static void spi_change_baud_rate(unsigned long baudrate) {
     while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
 }
 
+static void spi_hot_switch_32_bit(unsigned state) {
+    /* prior to momentarily disabling the SERCOM, make sure the CLK pin doesn't float up */
+    PORT->Group[0].PINCFG[17] = (PORT_PINCFG_Type) { .bit = { .PMUXEN = 0 } };
+
+    /* we can only swap 8/32 bit state when the sercom is not enabled */
+    SERCOM1->SPI.CTRLA.bit.ENABLE = 0;
+    while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
+
+    SERCOM1->SPI.CTRLC.bit.DATA32B = state;
+
+    SERCOM1->SPI.CTRLA.bit.ENABLE = 1;
+    while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
+
+    /* return control of the CLK pin to the SERCOM */
+    PORT->Group[0].PINCFG[17] = (PORT_PINCFG_Type) { .bit = { .PMUXEN = 1, .DRVSTR = 1 } };
+}
+
 static void spi_init(unsigned long baudrate) {
     /* sercom1 pad 2 is miso, pad 1 is sck, pad 3 is mosi. hw cs is not used */
 
-    /* configure pin PA17 ("SCK" on feather m4) to use functionality C (sercom1 pad 1), drive strength 1, for sck */
+    /* configure pin PA17 ("SCK" on feather m4) to use functionality C (sercom1 pad 1), drive
+     strength 1, for sck, AND make sure it stays low when we momentarily disable PMUXEN */
+    PORT->Group[0].OUTCLR.reg = 1U << 17;
+    PORT->Group[0].DIRSET.reg = 1U << 17;
     PORT->Group[0].PINCFG[17] = (PORT_PINCFG_Type) { .bit = { .PMUXEN = 1, .DRVSTR = 1 } };
     PORT->Group[0].PMUX[17 >> 1].bit.PMUXO = 0x2;
 
@@ -149,8 +169,11 @@ static char writing_a_block;
 static unsigned char card_write_response;
 
 static void spi_send_nonblocking_start(const void * buf, const size_t count) {
+    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+    spi_hot_switch_32_bit(1);
+
     *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_WRITE) = (DmacDescriptor) {
-        .BTCNT.reg = count,
+        .BTCNT.reg = count / 4,
         .SRCADDR.reg = ((size_t)buf) + count,
         .DSTADDR.reg = (size_t)&(SERCOM1->SPI.DATA.reg),
         .BTCTRL = { .bit = {
@@ -158,6 +181,7 @@ static void spi_send_nonblocking_start(const void * buf, const size_t count) {
             .BLOCKACT = DMAC_BTCTRL_BLOCKACT_INT_Val,
             .SRCINC = 1,
             .DSTINC = 0, /* write to the same register every time */
+            .BEATSIZE = DMAC_BTCTRL_BEATSIZE_WORD_Val, /* transfer 32 bits per beat */
         }}
     };
 
@@ -195,8 +219,12 @@ void DMAC_2_Handler(void) {
     while (DMAC->CRCSTATUS.bit.CRCBUSY);
     const uint16_t crc = DMAC->CRCCHKSUM.reg;
 
-    /* TODO: somewhat hack fix, might not be the actual fix */
+    /* TODO: this is necessary before switching from 32 to 8 bit mode, but does it still need
+     to be here when NOT switching back from bit mode? */
     while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+
+    /* switch from 32-bit mode back to 8-bit mode prior to sending crc */
+    spi_hot_switch_32_bit(0);
 
     /* blocking send of crc */
     while (!SERCOM1->SPI.INTFLAG.bit.DRE);
