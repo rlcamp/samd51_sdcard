@@ -483,9 +483,16 @@ int spi_sd_read_blocks(void * buf, unsigned long blocks, unsigned long long bloc
             return -1;
         }
 
-        unsigned char * restrict const block = ((unsigned char *)buf) + 512 * iblock;
-        for (size_t ibyte = 0; ibyte < 512; ibyte++)
-            block[ibyte] = spi_receive_one_byte_with_rx_enabled();
+        spi_hot_switch_32_bit(1);
+
+        uint32_t * restrict const block = ((uint32_t *)buf) + 128 * iblock;
+        for (size_t iword = 0; iword < 128; iword++) {
+            SERCOM1->SPI.DATA.bit.DATA = 0xffffffff;
+            while (!SERCOM1->SPI.INTFLAG.bit.RXC);
+            block[iword] = SERCOM1->SPI.DATA.bit.DATA;
+        }
+
+        spi_hot_switch_32_bit(0);
 
         /* read and discard two crc bytes */
         uint16_t crc = spi_receive_one_byte_with_rx_enabled() << 8;
