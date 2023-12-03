@@ -259,9 +259,14 @@ static void wait_for_card_ready(void) {
 }
 
 int spi_sd_flush_write(void) {
+    PORT->Group[0].OUTSET.reg = 1U << 20;
+    PORT->Group[0].PINCFG[20].reg = 0;
+    PORT->Group[0].DIRSET.reg = 1U << 20;
+
     while (*(volatile char *)&writing_a_block) yield();
     /* ensure we don't prefetch the below value before the above condition becomes true */
     __DMB();
+    PORT->Group[0].OUTCLR.reg = 1U << 20;
     const uint16_t response = card_write_response;
     wait_for_card_ready();
 
