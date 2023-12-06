@@ -1,4 +1,4 @@
-#include "samd51_sercom1_sdcard.h"
+#include "samd51_sdcard.h"
 
 #if __has_include(<samd51.h>)
 /* newer cmsis-atmel from upstream */
@@ -19,9 +19,6 @@ static_assert(((F_CPU / (2U * BAUD_RATE_FAST) - 1U) + 1U) * (2U * BAUD_RATE_FAST
               "baud rate not possible");
 
 #define IDMA_SPI_WRITE 2
-
-/* smaller values use more cpu while waiting but have lower latency */
-#define CARD_BUSY_BYTES_PER_CHECK 16
 
 /* do not use SECTION_DMAC_DESCRIPTOR because the linker script does not define hsram */
 __attribute__((weak, aligned(16))) DmacDescriptor dmac_descriptors[8] = { 0 }, dmac_writeback[8] = { 0 };
@@ -58,88 +55,84 @@ static void spi_dma_init(void) {
 
     DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.reg = (DMAC_CHCTRLA_Type) { .bit = {
         .RUNSTDBY = 1,
-        .TRIGSRC = 0x07, /* trigger when sercom1 is ready to send a new byte/word */
+        .TRIGSRC = 0x0B, /* trigger when sercom3 is ready to send a new byte/word */
         .TRIGACT = DMAC_CHCTRLA_TRIGACT_BURST_Val, /* one burst per trigger */
         .BURSTLEN = DMAC_CHCTRLA_BURSTLEN_SINGLE_Val /* one burst = one beat */
     }}.reg;
 }
 
-static void cs_init(void) {
-    /* configure pin PA14 (arduino pin D4 on the feather m4) as output for cs pin */
-    PORT->Group[0].OUTSET.reg = 1U << 14;
-    PORT->Group[0].PINCFG[14].reg = 0;
-    PORT->Group[0].DIRSET.reg = 1U << 14;
-}
-
 static void cs_high(void) {
-    PORT->Group[0].OUTSET.reg = 1U << 14;
+    PORT->Group[0].OUTSET.reg = 1U << 20;
 }
 
 static void cs_low(void) {
-    PORT->Group[0].OUTCLR.reg = 1U << 14;
+    PORT->Group[0].OUTCLR.reg = 1U << 20;
 }
 
 static void spi_change_baud_rate(unsigned long baudrate) {
-    SERCOM1->SPI.CTRLA.bit.ENABLE = 0;
-    while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
+    SERCOM3->SPI.CTRLA.bit.ENABLE = 0;
+    while (SERCOM3->SPI.SYNCBUSY.bit.ENABLE);
 
-    SERCOM1->SPI.BAUD.reg = F_CPU / (2U * baudrate) - 1U;
+    SERCOM3->SPI.BAUD.reg = F_CPU / (2U * baudrate) - 1U;
 
-    SERCOM1->SPI.CTRLA.bit.ENABLE = 1;
-    while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
+    SERCOM3->SPI.CTRLA.bit.ENABLE = 1;
+    while (SERCOM3->SPI.SYNCBUSY.bit.ENABLE);
 }
 
 static void spi_hot_switch_32_bit(unsigned state) {
     /* prior to momentarily disabling the SERCOM, make sure the CLK pin doesn't float up */
-    PORT->Group[0].PINCFG[17] = (PORT_PINCFG_Type) { .bit = { .PMUXEN = 0 } };
+    PORT->Group[0].PINCFG[16] = (PORT_PINCFG_Type) { .bit = { .PMUXEN = 0 } };
 
     /* we can only swap 8/32 bit state when the sercom is not enabled */
-    SERCOM1->SPI.CTRLA.bit.ENABLE = 0;
-    while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
+    SERCOM3->SPI.CTRLA.bit.ENABLE = 0;
+    while (SERCOM3->SPI.SYNCBUSY.bit.ENABLE);
 
-    SERCOM1->SPI.CTRLC.bit.DATA32B = state;
+    SERCOM3->SPI.CTRLC.bit.DATA32B = state;
 
-    SERCOM1->SPI.CTRLA.bit.ENABLE = 1;
-    while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
+    SERCOM3->SPI.CTRLA.bit.ENABLE = 1;
+    while (SERCOM3->SPI.SYNCBUSY.bit.ENABLE);
 
     /* return control of the CLK pin to the SERCOM */
-    PORT->Group[0].PINCFG[17] = (PORT_PINCFG_Type) { .bit = { .PMUXEN = 1, .DRVSTR = 1 } };
+    PORT->Group[0].PINCFG[16] = (PORT_PINCFG_Type) { .bit = { .PMUXEN = 1, .DRVSTR = 1 } };
 }
 
 static void spi_init(unsigned long baudrate) {
-    /* sercom1 pad 2 is miso, pad 1 is sck, pad 3 is mosi. hw cs is not used */
+    /* configure pin PA20 (silkscreen pin "10" on the feather m4) as output for cs pin */
+    PORT->Group[0].OUTSET.reg = 1U << 20;
+    PORT->Group[0].PINCFG[20].reg = 0;
+    PORT->Group[0].DIRSET.reg = 1U << 20;
 
-    /* configure pin PA17 ("SCK" on feather m4) to use functionality C (sercom1 pad 1), drive
-     strength 1, for sck, AND make sure it stays low when we momentarily disable PMUXEN */
-    PORT->Group[0].OUTCLR.reg = 1U << 17;
-    PORT->Group[0].DIRSET.reg = 1U << 17;
-    PORT->Group[0].PINCFG[17] = (PORT_PINCFG_Type) { .bit = { .PMUXEN = 1, .DRVSTR = 1 } };
-    PORT->Group[0].PMUX[17 >> 1].bit.PMUXO = 0x2;
+    /* configure pin PA16 ("5" on feather m4) to use functionality D (sercom3 pad 1), drive
+     strength 0, for sck, AND make sure it stays low when we momentarily disable PMUXEN */
+    PORT->Group[0].OUTCLR.reg = 1U << 16;
+    PORT->Group[0].DIRSET.reg = 1U << 16;
+    PORT->Group[0].PINCFG[16] = (PORT_PINCFG_Type) { .bit = { .PMUXEN = 1, .DRVSTR = 0 } };
+    PORT->Group[0].PMUX[16 >> 1].bit.PMUXE = 0x3;
 
-    /* configure pin PB23 ("MO" on feather m4) to use functionality C (sercom1 pad 3), drive strength 1, for mosi */
-    PORT->Group[1].PINCFG[23] = (PORT_PINCFG_Type) { .bit = { .PMUXEN = 1, .DRVSTR = 1 } };
-    PORT->Group[1].PMUX[23 >> 1].bit.PMUXO = 0x2;
+    /* configure pin PA19 ("9" on feather m4) to use functionality D (sercom3 pad 3), drive strength 0, for mosi */
+    PORT->Group[0].PINCFG[19] = (PORT_PINCFG_Type) { .bit = { .PMUXEN = 1, .DRVSTR = 0 } };
+    PORT->Group[0].PMUX[19 >> 1].bit.PMUXO = 0x3;
 
-    /* configure pin PB22 ("MI" on feather m4) to use functionality C (sercom1 pad 2), input enabled, for miso */
-    PORT->Group[1].PINCFG[22] = (PORT_PINCFG_Type) { .bit = { .PMUXEN = 1, .INEN = 1 } };
-    PORT->Group[1].PMUX[22 >> 1].bit.PMUXE = 0x2;
+    /* configure pin PA18 ("6" on feather m4) to use functionality D (sercom3 pad 2), input enabled, for miso */
+    PORT->Group[0].PINCFG[18] = (PORT_PINCFG_Type) { .bit = { .PMUXEN = 1, .INEN = 1 } };
+    PORT->Group[0].PMUX[18 >> 1].bit.PMUXE = 0x3;
 
     /* clear all interrupts */
-    NVIC_ClearPendingIRQ(SERCOM1_1_IRQn);
+    NVIC_ClearPendingIRQ(SERCOM3_1_IRQn);
 
-    MCLK->APBAMASK.reg |= MCLK_APBAMASK_SERCOM1;
+    MCLK->APBBMASK.reg |= MCLK_APBBMASK_SERCOM3;
 
     /* unconditionally assume GCLK0 is running at F_CPU */
-    GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].bit.CHEN = 0;
-    while (GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].bit.CHEN);
-    GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].reg = GCLK_PCHCTRL_GEN_GCLK0 | GCLK_PCHCTRL_CHEN;
-    while (!GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].bit.CHEN);
+    GCLK->PCHCTRL[SERCOM3_GCLK_ID_CORE].bit.CHEN = 0;
+    while (GCLK->PCHCTRL[SERCOM3_GCLK_ID_CORE].bit.CHEN);
+    GCLK->PCHCTRL[SERCOM3_GCLK_ID_CORE].reg = GCLK_PCHCTRL_GEN_GCLK0 | GCLK_PCHCTRL_CHEN;
+    while (!GCLK->PCHCTRL[SERCOM3_GCLK_ID_CORE].bit.CHEN);
 
     /* reset spi peripheral */
-    SERCOM1->SPI.CTRLA.bit.SWRST = 1;
-    while (SERCOM1->SPI.CTRLA.bit.SWRST || SERCOM1->SPI.SYNCBUSY.bit.SWRST);
+    SERCOM3->SPI.CTRLA.bit.SWRST = 1;
+    while (SERCOM3->SPI.CTRLA.bit.SWRST || SERCOM3->SPI.SYNCBUSY.bit.SWRST);
 
-    SERCOM1->SPI.CTRLA = (SERCOM_SPI_CTRLA_Type) { .bit = {
+    SERCOM3->SPI.CTRLA = (SERCOM_SPI_CTRLA_Type) { .bit = {
         .MODE = 0x3, /* spi peripheral is in master mode */
         .DOPO = 0x2, /* clock is sercom pad 1, MOSI is pad 3 */
         .DIPO = 0x2, /* MISO is sercom pad 2 */
@@ -149,33 +142,33 @@ static void spi_init(unsigned long baudrate) {
         .RUNSTDBY = 1
     }};
 
-    SERCOM1->SPI.CTRLB = (SERCOM_SPI_CTRLB_Type) { .bit = {
+    SERCOM3->SPI.CTRLB = (SERCOM_SPI_CTRLB_Type) { .bit = {
         .RXEN = 0, /* spi receive is not enabled until needed */
         .MSSEN = 0, /* no hardware cs control */
         .CHSIZE = 0 /* eight bit characters */
     }};
-    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+    while (SERCOM3->SPI.SYNCBUSY.bit.CTRLB);
 
-    SERCOM1->SPI.BAUD.reg = F_CPU / (2U * baudrate) - 1U;
+    SERCOM3->SPI.BAUD.reg = F_CPU / (2U * baudrate) - 1U;
 
     spi_dma_init();
 
     /* enable spi peripheral */
-    SERCOM1->SPI.CTRLA.bit.ENABLE = 1;
-    while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
+    SERCOM3->SPI.CTRLA.bit.ENABLE = 1;
+    while (SERCOM3->SPI.SYNCBUSY.bit.ENABLE);
 }
 
 static char writing_a_block;
 static unsigned char card_write_response;
 
 static void spi_send_nonblocking_start(const void * buf, const size_t count) {
-    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+    while (!SERCOM3->SPI.INTFLAG.bit.TXC);
     spi_hot_switch_32_bit(1);
 
     *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_WRITE) = (DmacDescriptor) {
         .BTCNT.reg = count / 4,
         .SRCADDR.reg = ((size_t)buf) + count,
-        .DSTADDR.reg = (size_t)&(SERCOM1->SPI.DATA.reg),
+        .DSTADDR.reg = (size_t)&(SERCOM3->SPI.DATA.reg),
         .BTCTRL = { .bit = {
             .VALID = 1,
             .BLOCKACT = DMAC_BTCTRL_BLOCKACT_INT_Val,
@@ -205,9 +198,9 @@ static void spi_send_nonblocking_start(const void * buf, const size_t count) {
 
 __attribute((always_inline)) inline
 static uint8_t spi_receive_one_byte_with_rx_enabled(void) {
-    SERCOM1->SPI.DATA.bit.DATA = 0xff;
-    while (!SERCOM1->SPI.INTFLAG.bit.RXC);
-    return SERCOM1->SPI.DATA.bit.DATA;
+    SERCOM3->SPI.DATA.bit.DATA = 0xff;
+    while (!SERCOM3->SPI.INTFLAG.bit.RXC);
+    return SERCOM3->SPI.DATA.bit.DATA;
 }
 
 static_assert(2 == IDMA_SPI_WRITE, "dmac channel isr mismatch");
@@ -221,22 +214,22 @@ void DMAC_2_Handler(void) {
 
     /* TODO: this is necessary before switching from 32 to 8 bit mode, but does it still need
      to be here when NOT switching back from bit mode? */
-    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+    while (!SERCOM3->SPI.INTFLAG.bit.TXC);
 
     /* switch from 32-bit mode back to 8-bit mode prior to sending crc */
     spi_hot_switch_32_bit(0);
 
     /* blocking send of crc */
-    while (!SERCOM1->SPI.INTFLAG.bit.DRE);
-    SERCOM1->SPI.DATA.bit.DATA = (crc >> 8U) & 0xff;
-    while (!SERCOM1->SPI.INTFLAG.bit.DRE);
-    SERCOM1->SPI.DATA.bit.DATA = (crc) & 0xff;
+    while (!SERCOM3->SPI.INTFLAG.bit.DRE);
+    SERCOM3->SPI.DATA.bit.DATA = (crc >> 8U) & 0xff;
+    while (!SERCOM3->SPI.INTFLAG.bit.DRE);
+    SERCOM3->SPI.DATA.bit.DATA = (crc) & 0xff;
 
     /* wait for crc to complete sending before enabling rx */
-    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+    while (!SERCOM3->SPI.INTFLAG.bit.TXC);
 
-    SERCOM1->SPI.CTRLB.bit.RXEN = 1;
-    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+    SERCOM3->SPI.CTRLB.bit.RXEN = 1;
+    while (SERCOM3->SPI.SYNCBUSY.bit.CTRLB);
 
     /* blocking receive of one byte */
     card_write_response = spi_receive_one_byte_with_rx_enabled();
@@ -250,8 +243,8 @@ void DMAC_2_Handler(void) {
 }
 
 static void wait_for_card_ready(void) {
-    SERCOM1->SPI.CTRLB.bit.RXEN = 1;
-    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+    SERCOM3->SPI.CTRLB.bit.RXEN = 1;
+    while (SERCOM3->SPI.SYNCBUSY.bit.CTRLB);
 
     uint8_t res;
     do res = spi_receive_one_byte_with_rx_enabled();
@@ -259,14 +252,10 @@ static void wait_for_card_ready(void) {
 }
 
 int spi_sd_flush_write(void) {
-    PORT->Group[0].OUTSET.reg = 1U << 20;
-    PORT->Group[0].PINCFG[20].reg = 0;
-    PORT->Group[0].DIRSET.reg = 1U << 20;
-
     while (*(volatile char *)&writing_a_block) yield();
     /* ensure we don't prefetch the below value before the above condition becomes true */
     __DMB();
-    PORT->Group[0].OUTCLR.reg = 1U << 20;
+
     const uint16_t response = card_write_response;
     wait_for_card_ready();
 
@@ -280,31 +269,31 @@ int spi_sd_flush_write(void) {
 }
 
 void spi_sd_start_writing_a_block(const void * buf) {
-    SERCOM1->SPI.CTRLB.bit.RXEN = 0;
-    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+    SERCOM3->SPI.CTRLB.bit.RXEN = 0;
+    while (SERCOM3->SPI.SYNCBUSY.bit.CTRLB);
 
-    while (!SERCOM1->SPI.INTFLAG.bit.DRE);
-    SERCOM1->SPI.DATA.bit.DATA = 0xfc;
+    while (!SERCOM3->SPI.INTFLAG.bit.DRE);
+    SERCOM3->SPI.DATA.bit.DATA = 0xfc;
 
     writing_a_block = 1;
     spi_send_nonblocking_start(buf, 512);
 }
 
 static void spi_send(const void * buf, const size_t size) {
-    SERCOM1->SPI.CTRLB.bit.RXEN = 0;
-    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+    SERCOM3->SPI.CTRLB.bit.RXEN = 0;
+    while (SERCOM3->SPI.SYNCBUSY.bit.CTRLB);
 
     for (size_t ibyte = 0; ibyte < size; ibyte++) {
-        while (!SERCOM1->SPI.INTFLAG.bit.DRE);
-        SERCOM1->SPI.DATA.bit.DATA = ((const char *)buf)[ibyte];
+        while (!SERCOM3->SPI.INTFLAG.bit.DRE);
+        SERCOM3->SPI.DATA.bit.DATA = ((const char *)buf)[ibyte];
     }
 
-    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+    while (!SERCOM3->SPI.INTFLAG.bit.TXC);
 }
 
 static uint32_t spi_receive_uint32(void) {
-    SERCOM1->SPI.CTRLB.bit.RXEN = 1;
-    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+    SERCOM3->SPI.CTRLB.bit.RXEN = 1;
+    while (SERCOM3->SPI.SYNCBUSY.bit.CTRLB);
 
     uint32_t response = spi_receive_one_byte_with_rx_enabled() << 24;
     response |= spi_receive_one_byte_with_rx_enabled() << 16;
@@ -314,8 +303,8 @@ static uint32_t spi_receive_uint32(void) {
 }
 
 static uint8_t r1_response(void) {
-    SERCOM1->SPI.CTRLB.bit.RXEN = 1;
-    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+    SERCOM3->SPI.CTRLB.bit.RXEN = 1;
+    while (SERCOM3->SPI.SYNCBUSY.bit.CTRLB);
 
     uint8_t result, attempts = 0;
     do result = spi_receive_one_byte_with_rx_enabled();
@@ -350,8 +339,6 @@ static uint8_t command_and_r1_response(const uint8_t cmd, const uint32_t arg) {
 }
 
 void spi_sd_init(void) {
-    cs_init();
-
     /* must wait 1 millisecond after power supply has stabilized */
     //   delay(1);
 
@@ -472,8 +459,8 @@ int spi_sd_read_blocks(void * buf, unsigned long blocks, unsigned long long bloc
     /* send cmd17 or cmd18 */
     if (command_and_r1_response(blocks > 1 ? 18 : 17, block_address) != 0) return -1;
 
-    SERCOM1->SPI.CTRLB.bit.RXEN = 1;
-    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+    SERCOM3->SPI.CTRLB.bit.RXEN = 1;
+    while (SERCOM3->SPI.SYNCBUSY.bit.CTRLB);
 
     /* clock out the response in 1 + 512 + 2 byte blocks */
     for (size_t iblock = 0; iblock < blocks; iblock++) {
@@ -492,9 +479,9 @@ int spi_sd_read_blocks(void * buf, unsigned long blocks, unsigned long long bloc
 
         uint32_t * restrict const block = ((uint32_t *)buf) + 128 * iblock;
         for (size_t iword = 0; iword < 128; iword++) {
-            SERCOM1->SPI.DATA.bit.DATA = 0xffffffff;
-            while (!SERCOM1->SPI.INTFLAG.bit.RXC);
-            block[iword] = SERCOM1->SPI.DATA.bit.DATA;
+            SERCOM3->SPI.DATA.bit.DATA = 0xffffffff;
+            while (!SERCOM3->SPI.INTFLAG.bit.RXC);
+            block[iword] = SERCOM3->SPI.DATA.bit.DATA;
         }
 
         spi_hot_switch_32_bit(0);
