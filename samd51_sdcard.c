@@ -12,8 +12,8 @@
 #include <stddef.h>
 
 #define BAUD_RATE_SLOW 250000
-#define BAUD_RATE_FAST (F_CPU / 4)
-/* note you will have problems if you try to run spi at 24 MBd on a 48 MHz clock */
+#define BAUD_RATE_FAST (F_CPU / 2)
+/* note this baud rate is too fast for DMA to keep up if doing two-way DRE-triggered DMA */
 
 static_assert(((F_CPU / (2U * BAUD_RATE_FAST) - 1U) + 1U) * (2U * BAUD_RATE_FAST) == F_CPU,
               "baud rate not possible");
