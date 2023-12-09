@@ -93,7 +93,7 @@ static void spi_hot_switch_32_bit(unsigned state) {
     while (SERCOM3->SPI.SYNCBUSY.bit.ENABLE);
 
     /* return control of the CLK pin to the SERCOM */
-    PORT->Group[0].PINCFG[16] = (PORT_PINCFG_Type) { .bit = { .PMUXEN = 1, .DRVSTR = 1 } };
+    PORT->Group[0].PINCFG[16] = (PORT_PINCFG_Type) { .bit = { .PMUXEN = 1, .DRVSTR = 0 } };
 }
 
 static void spi_init(unsigned long baudrate) {
@@ -263,8 +263,6 @@ int spi_sd_flush_write(void) {
      so that caller does not have to assume calling this function may have cleared it */
     __SEV();
 
-//    if (response != 0xE5) fprintf(stderr, "%s(%d): response 0x%2.2X\n", __func__, __LINE__, response);
-
     return response != 0xE5 ? -1 : 0;
 }
 
@@ -339,8 +337,7 @@ static uint8_t command_and_r1_response(const uint8_t cmd, const uint32_t arg) {
 }
 
 void spi_sd_init(void) {
-    /* must wait 1 millisecond after power supply has stabilized */
-    //   delay(1);
+    /* TODO: ideally ensure 1 millisecond has passed since power supply has stabilized */
 
     /* and then clock out at least 74 cycles at 100-400 kBd with cs pin held high */
     spi_init(BAUD_RATE_SLOW);
@@ -357,7 +354,6 @@ void spi_sd_init(void) {
         const uint8_t cmd0_r1_response = command_and_r1_response(0, 0);
         cs_high();
 
-//        fprintf(stderr, "%s: cmd0_r1_response: 0x%2.2X\n", __func__, cmd0_r1_response);
         if (0x01 == cmd0_r1_response) break;
     }
 
@@ -376,7 +372,6 @@ void spi_sd_init(void) {
         const uint32_t response = spi_receive_uint32();
         cs_high();
 
-//        fprintf(stderr, "%s: cmd8 response: 0x%8.8X\n", __func__, (unsigned int)response);
         if (0x1AA == response) break;
     }
 
@@ -390,26 +385,24 @@ void spi_sd_init(void) {
 
         if (cmd55_r1_response > 1) continue;
 
-//        fprintf(stderr, "%s: sending acmd41\n", __func__);
         cs_low();
         wait_for_card_ready();
 
         const uint8_t acmd41_r1_response = command_and_r1_response(41, 1U << 30);
         cs_high();
 
-//        fprintf(stderr, "%s: acmd41_r1_response: 0x%2.2X\n", __func__, acmd41_r1_response);
         if (!acmd41_r1_response) break;
     }
 
+    /* cmd58 */
     while (1) {
         cs_low();
         wait_for_card_ready();
 
-        const uint8_t cmd58_r1_response = command_and_r1_response(58, 0);
+        const uint8_t r1_response = command_and_r1_response(58, 0);
 
-        if (cmd58_r1_response > 1) {
+        if (r1_response > 1) {
             cs_high();
-
             continue;
         }
 
@@ -417,22 +410,17 @@ void spi_sd_init(void) {
         (void)ocr;
         cs_high();
 
-//        fprintf(stderr, "%s: cmd58 response: 0x%8.8X\n", __func__, ocr);
-//        if (ocr & (1U << 30)) fprintf(stderr, "%s: bit 30 is set\n", __func__);
-
         break;
     }
 
     /* cmd16 */
     while (1) {
-//        fprintf(stderr, "%s: sending cmd16\n", __func__);
         cs_low();
         wait_for_card_ready();
 
         const uint8_t r1_response = command_and_r1_response(16, 512);
         cs_high();
 
-//        fprintf(stderr, "%s: cmd16 response: 0x%2.2X\n", __func__, r1_response);
         if (r1_response <= 1) break;
     }
 
@@ -446,7 +434,6 @@ void spi_sd_init(void) {
 
         cs_high();
 
-//        fprintf(stderr, "%s: cmd59 response: 0x%2.2X\n", __func__, r1_response);
         if (r1_response <= 1) break;
     }
 #endif
