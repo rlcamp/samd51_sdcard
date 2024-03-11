@@ -5,7 +5,7 @@
 #include "diskio.h"
 
 /* block device implementation code being wrapped by this */
-#include "samd51_sercom1_sdcard.h"
+#include "samd51_sdcard.h"
 
 /* needed for INT_MAX, this will go away */
 #include <limits.h>
@@ -20,7 +20,9 @@ DSTATUS disk_status(BYTE pdrv) {
 
 DSTATUS disk_initialize(BYTE pdrv) {
     (void)pdrv;
-    if (!initted) spi_sd_init();
+    if (!initted) {
+        if (-1 == spi_sd_init()) return STA_NOINIT;
+    }
     initted = 1;
     return 0;
 }
@@ -28,14 +30,14 @@ DSTATUS disk_initialize(BYTE pdrv) {
 DRESULT disk_read(BYTE pdrv, BYTE * buff, LBA_t sector, UINT count) {
     (void)pdrv;
 
-//    fprintf(stderr, "%s(%d): reading %u blocks starting at %u\n", __func__, __LINE__, count, (unsigned)sector);
+//    fprintf(stderr, "%s(%d): reading %u blocks starting at %u\r\n", __func__, __LINE__, count, (unsigned)sector);
     /* this will block, but will internally call yield() and __WFI() */
     return -1 == spi_sd_read_blocks(buff, count, sector) ? RES_PARERR : 0;
 }
 
 DRESULT disk_write(BYTE pdrv, const BYTE * buff, LBA_t sector, UINT count) {
     (void)pdrv;
-//    fprintf(stderr, "%s(%d): writing %u blocks starting at %u\n", __func__, __LINE__, count, (unsigned)sector);
+//    fprintf(stderr, "%s(%d): writing %u blocks starting at %u\r\n", __func__, __LINE__, count, (unsigned)sector);
     return -1 == spi_sd_write_blocks(buff, count, sector) ? RES_ERROR : 0;
 }
 
