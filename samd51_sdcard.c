@@ -336,8 +336,9 @@ static uint8_t command_and_r1_response(const uint8_t cmd, const uint32_t arg) {
     return r1_response();
 }
 
-void spi_sd_init(void) {
-    /* TODO: ideally ensure 1 millisecond has passed since power supply has stabilized */
+int spi_sd_init(void) {
+    /* spin for the recommended 1 ms, assuming each loop iteration takes at least 2 cycles */
+    for (size_t idelay = 0; idelay < F_CPU / 2048; idelay++) asm volatile("" :::);
 
     /* and then clock out at least 74 cycles at 100-400 kBd with cs pin held high */
     spi_init(BAUD_RATE_SLOW);
@@ -346,7 +347,7 @@ void spi_sd_init(void) {
     spi_change_baud_rate(BAUD_RATE_FAST);
 
     /* cmd0 */
-    while (1) {
+    for (size_t ipass = 0;; ipass++) {
         cs_low();
         wait_for_card_ready();
 
@@ -355,6 +356,9 @@ void spi_sd_init(void) {
         cs_high();
 
         if (0x01 == cmd0_r1_response) break;
+
+        /* if card likely not present, give up */
+        if (1024 == ipass && 255 == cmd0_r1_response) return -1;
     }
 
     /* cmd8 */
@@ -437,6 +441,8 @@ void spi_sd_init(void) {
         if (r1_response <= 1) break;
     }
 #endif
+
+    return 0;
 }
 
 int spi_sd_read_blocks(void * buf, unsigned long blocks, unsigned long long block_address) {
