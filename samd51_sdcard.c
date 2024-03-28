@@ -246,9 +246,8 @@ static void wait_for_card_ready(void) {
     SERCOM3->SPI.CTRLB.bit.RXEN = 1;
     while (SERCOM3->SPI.SYNCBUSY.bit.CTRLB);
 
-    uint8_t res;
-    do res = spi_receive_one_byte_with_rx_enabled();
-    while (res != 0xff);
+    /* loop until card pulls MISO high for a full byte worth of clocks */
+    while (spi_receive_one_byte_with_rx_enabled() != 0xff);
 }
 
 int spi_sd_flush_write(void) {
@@ -305,8 +304,7 @@ static uint8_t r1_response(void) {
     while (SERCOM3->SPI.SYNCBUSY.bit.CTRLB);
 
     uint8_t result, attempts = 0;
-    do result = spi_receive_one_byte_with_rx_enabled();
-    while (0xFF == result && attempts++ < 8);
+    while (0xFF == (result = spi_receive_one_byte_with_rx_enabled()) && attempts++ < 8);
     return result;
 }
 
@@ -459,8 +457,7 @@ int spi_sd_read_blocks(void * buf, unsigned long blocks, unsigned long long bloc
     for (size_t iblock = 0; iblock < blocks; iblock++) {
         uint8_t result;
         /* this can loop for a while */
-        do result = spi_receive_one_byte_with_rx_enabled();
-        while (0xFF == result);
+        while (0xFF == (result = spi_receive_one_byte_with_rx_enabled()));
 
         /* when we break out of the above loop, we've read the Data Token byte */
         if (0xFE != result) {
