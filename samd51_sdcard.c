@@ -236,16 +236,6 @@ void DMAC_2_Handler(void) {
     __DSB();
 }
 
-static int wait_for_card_ready_with_timeout(unsigned count) {
-    SERCOM1->SPI.CTRLB.bit.RXEN = 1;
-    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
-
-    /* loop until card pulls MISO high for a full byte worth of clocks */
-    while (--count)
-        if (0xFF == spi_receive_one_byte_with_rx_enabled()) return 0;
-    return -1;
-}
-
 static void wait_for_card_ready(void) {
     SERCOM1->SPI.CTRLB.bit.RXEN = 1;
     while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
@@ -375,36 +365,29 @@ static uint8_t command_and_r1_response(const uint8_t cmd, const uint32_t arg) {
     return r1_response();
 }
 
-unsigned spi_sd_baud_rate_achieved = 0;
-
 int spi_sd_init(void) {
     /* spin for the recommended 1 ms, assuming each loop iteration takes at least 2 cycles */
     for (size_t idelay = 0; idelay < F_CPU / 2048; idelay++) asm volatile("" :::);
 
-    /* and then clock out at least 74 cycles at 100-400 kBd with cs pin held high */
     spi_init(BAUD_RATE_SLOW);
-    spi_send((unsigned char[10]) { [0 ... 9] = 0xFF }, 10);
 
-    unsigned baud_rate_denominator = 2;
+    /* clear miso */
+    cs_low();
+    spi_send((unsigned char[1]) { 0xff }, 1);
+
+    cs_high();
+
+    /* and then clock out at least 74 cycles at 100-400 kBd with cs pin held high */
+    spi_send((unsigned char[10]) { [0 ... 9] = 0xFF }, 10);
 
     /* cmd0 */
     for (size_t ipass = 0;; ipass++) {
-        /* attempt multiple baud rates */
-        while (1) {
-            cs_low();
-            spi_sd_baud_rate_achieved = F_CPU / baud_rate_denominator;
-            spi_change_baud_rate(F_CPU / baud_rate_denominator);
-            if (-1 == wait_for_card_ready_with_timeout(262144)) {
-                cs_high();
-                baud_rate_denominator += 2;
-                if (baud_rate_denominator > 16) return -1;
-                else continue;
-            }
-            break;
-        }
+        cs_low();
 
         /* send cmd0 */
         const uint8_t cmd0_r1_response = command_and_r1_response(0, 0);
+        wait_for_card_ready();
+
         cs_high();
 
         if (0x01 == cmd0_r1_response) break;
@@ -449,6 +432,8 @@ int spi_sd_init(void) {
 
         if (!acmd41_r1_response) break;
     }
+
+    spi_change_baud_rate(BAUD_RATE_FAST);
 
     /* cmd58 */
     while (1) {
