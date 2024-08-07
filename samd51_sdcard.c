@@ -1,3 +1,4 @@
+/* TODO: something is not working quite right here when running off a non-48 MHz clock */
 #include "samd51_sdcard.h"
 
 #if __has_include(<samd51.h>)
@@ -12,10 +13,10 @@
 #include <stddef.h>
 
 #define BAUD_RATE_SLOW 250000
-#define BAUD_RATE_FAST (F_CPU / 2)
+#define BAUD_RATE_FAST 24000000ULL
 /* note this baud rate is too fast for DMA to keep up if doing two-way DRE-triggered DMA */
 
-static_assert(((F_CPU / (2U * BAUD_RATE_FAST) - 1U) + 1U) * (2U * BAUD_RATE_FAST) == F_CPU,
+static_assert(((48000000ULL / (2U * BAUD_RATE_FAST) - 1U) + 1U) * (2U * BAUD_RATE_FAST) == 48000000ULL,
               "baud rate not possible");
 
 #define IDMA_SPI_WRITE 2
@@ -69,20 +70,28 @@ static void cs_low(void) {
     PORT->Group[0].OUTCLR.reg = 1U << 14;
 }
 
-static void spi_change_baud_rate(unsigned long baudrate) {
-    /* prior to momentarily disabling the SERCOM, make sure the CLK pin doesn't float up */
+static void spi_disable(void) {
+    /* prior to disabling the SERCOM, make sure the CLK pin doesn't float up */
     PORT->Group[0].PINCFG[17] = (PORT_PINCFG_Type) { .bit = { .PMUXEN = 0 } };
 
     SERCOM1->SPI.CTRLA.bit.ENABLE = 0;
     while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
+}
 
-    SERCOM1->SPI.BAUD.reg = F_CPU / (2U * baudrate) - 1U;
-
+static void spi_enable(void) {
     SERCOM1->SPI.CTRLA.bit.ENABLE = 1;
     while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
 
     /* return control of the CLK pin to the SERCOM */
     PORT->Group[0].PINCFG[17] = (PORT_PINCFG_Type) { .bit = { .PMUXEN = 1, .DRVSTR = 0 } };
+}
+
+static void spi_change_baud_rate(unsigned long baudrate) {
+    spi_disable();
+
+    SERCOM1->SPI.BAUD.reg = 48000000ULL / (2U * baudrate) - 1U;
+
+    spi_enable();
 }
 
 static void spi_init(unsigned long baudrate) {
@@ -111,10 +120,13 @@ static void spi_init(unsigned long baudrate) {
 
     MCLK->APBAMASK.reg |= MCLK_APBAMASK_SERCOM1;
 
-    /* unconditionally assume GCLK0 is running at F_CPU */
     GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].bit.CHEN = 0;
     while (GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].bit.CHEN);
-    GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].reg = GCLK_PCHCTRL_GEN_GCLK0 | GCLK_PCHCTRL_CHEN;
+    GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].reg = (GCLK_PCHCTRL_Type) { .bit = {
+        /* if GCLK0 is not 48 MHz, assume GCLK1 is */
+        .GEN = GCLK_GENCTRL_SRC_DFLL_Val == GCLK->GENCTRL[0].bit.SRC ? GCLK_PCHCTRL_GEN_GCLK0_Val : GCLK_PCHCTRL_GEN_GCLK1_Val,
+        .CHEN = 1
+    }}.reg;
     while (!GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].bit.CHEN);
 
     /* reset spi peripheral */
@@ -140,7 +152,7 @@ static void spi_init(unsigned long baudrate) {
 
     SERCOM1->SPI.CTRLC.bit.DATA32B = 1;
 
-    SERCOM1->SPI.BAUD.reg = F_CPU / (2U * baudrate) - 1U;
+    SERCOM1->SPI.BAUD.reg = 48000000ULL / (2U * baudrate) - 1U;
 
     spi_dma_init();
 
@@ -367,6 +379,7 @@ static uint8_t command_and_r1_response(const uint8_t cmd, const uint32_t arg) {
 
 int spi_sd_init(void) {
     /* spin for the recommended 1 ms, assuming each loop iteration takes at least 2 cycles */
+    /* TODO: replace with some other guarantee that it has been > 1 ms since powerup */
     for (size_t idelay = 0; idelay < F_CPU / 2048; idelay++) asm volatile("" :::);
 
     spi_init(BAUD_RATE_SLOW);
