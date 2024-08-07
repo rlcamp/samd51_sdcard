@@ -98,6 +98,32 @@ static void spi_change_baud_rate(unsigned long baudrate) {
     spi_enable();
 }
 
+void spi_sd_shutdown(void) {
+    DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.ENABLE = 0;
+
+    SERCOM1->SPI.CTRLA.bit.ENABLE = 0;
+    while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
+
+    NVIC_DisableIRQ(DMAC_2_IRQn);
+    NVIC_ClearPendingIRQ(DMAC_2_IRQn);
+
+    GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].bit.CHEN = 0;
+    while (GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].bit.CHEN);
+
+    MCLK->APBAMASK.bit.SERCOM1_ = 0;
+
+    /* deinit cs pin */
+    PORT->Group[0].PINCFG[14].reg = 0;
+    PORT->Group[0].DIRCLR.reg = 1U << 14;
+    PORT->Group[0].OUTCLR.reg = 1U << 14;
+
+    /* deinit other pins */
+    PORT->Group[0].PINCFG[17].reg = 0;
+    PORT->Group[0].DIRCLR.reg = 1U << 17;
+    PORT->Group[1].PINCFG[23].reg = 0;
+    PORT->Group[1].DIRCLR.reg = 1U << 23;
+}
+
 static void spi_init(unsigned long baudrate) {
     /* configure pin PA14 (silkscreen pin "D4" on the feather m4) as output for cs pin */
     PORT->Group[0].OUTSET.reg = 1U << 14;
