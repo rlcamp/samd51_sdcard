@@ -580,7 +580,7 @@ static void spi_sd_write_blocks_end(void) {
 }
 
 static unsigned long long next_write_block_address = ULLONG_MAX;
-static const void * whitelisted_nonblocking_src = NULL;
+static const void * known_safe_nonblocking_src = NULL;
 
 static int spi_sd_finish_multiblock_write_and_leave_enabled(void) {
     if (next_write_block_address != ULLONG_MAX) {
@@ -596,7 +596,7 @@ static int spi_sd_finish_multiblock_write_and_leave_enabled(void) {
 }
 
 void spi_sd_mark_pointer_for_non_blocking_write(const void * p) {
-    whitelisted_nonblocking_src = p;
+    known_safe_nonblocking_src = p;
 }
 
 int spi_sd_start_writing_next_block(const void * buf, const unsigned long long block_address) {
@@ -617,8 +617,8 @@ int spi_sd_start_writing_next_block(const void * buf, const unsigned long long b
     spi_sd_start_writing_a_block(buf);
     next_write_block_address = block_address + 1;
 
-    if (buf == whitelisted_nonblocking_src)
-        whitelisted_nonblocking_src = NULL;
+    if (buf == known_safe_nonblocking_src)
+        known_safe_nonblocking_src = NULL;
     else
         if (-1 == spi_sd_flush_write_block()) return -1;
 
