@@ -73,6 +73,7 @@ static void cs_low(void) {
 static void spi_disable(void) {
     /* prior to disabling the SERCOM, make sure the CLK pin doesn't float up */
     PORT->Group[0].PINCFG[17] = (PORT_PINCFG_Type) { .bit = { .PMUXEN = 0 } };
+    PORT->Group[1].PINCFG[23] = (PORT_PINCFG_Type) { .bit = { .PMUXEN = 0 } };
 
     SERCOM1->SPI.CTRLA.bit.ENABLE = 0;
     while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
@@ -84,6 +85,7 @@ static void spi_enable(void) {
 
     /* return control of the CLK pin to the SERCOM */
     PORT->Group[0].PINCFG[17] = (PORT_PINCFG_Type) { .bit = { .PMUXEN = 1, .DRVSTR = 0 } };
+    PORT->Group[1].PINCFG[23] = (PORT_PINCFG_Type) { .bit = { .PMUXEN = 1, .DRVSTR = 0 } };
 }
 
 static void spi_change_baud_rate(unsigned long baudrate) {
@@ -108,6 +110,8 @@ static void spi_init(unsigned long baudrate) {
     PORT->Group[0].PMUX[17 >> 1].bit.PMUXO = 0x2;
 
     /* configure pin PB23 ("MO" on feather m4) to use functionality C (sercom1 pad 3), drive strength 0, for mosi */
+    PORT->Group[1].OUTSET.reg = 1U << 23;
+    PORT->Group[1].DIRSET.reg = 1U << 23;
     PORT->Group[1].PINCFG[23] = (PORT_PINCFG_Type) { .bit = { .PMUXEN = 1, .DRVSTR = 0 } };
     PORT->Group[1].PMUX[23 >> 1].bit.PMUXO = 0x2;
 
