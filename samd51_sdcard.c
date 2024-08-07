@@ -11,6 +11,7 @@
 
 #include <assert.h>
 #include <stddef.h>
+#include <limits.h>
 
 #define BAUD_RATE_SLOW 250000
 #define BAUD_RATE_FAST 24000000ULL
@@ -193,7 +194,7 @@ static void spi_init(unsigned long baudrate) {
     while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
 }
 
-static char writing_a_block;
+static char writing_a_block, must_flush_write;
 static unsigned char card_write_response;
 
 static void spi_send_nonblocking_start(const void * buf, const size_t count) {
@@ -301,7 +302,9 @@ static int wait_for_card_ready_with_timeout(unsigned count) {
     return -1;
 }
 
-static int spi_sd_flush_write(void) {
+static int spi_sd_flush_write_block(void) {
+    if (!must_flush_write) return 0;
+
     while (*(volatile char *)&writing_a_block) yield();
     /* ensure we don't prefetch the below value before the above condition becomes true */
     __DMB();
@@ -323,6 +326,8 @@ static int spi_sd_flush_write(void) {
      so that caller does not have to assume calling this function may have cleared it */
     __SEV();
 
+    must_flush_write = 0;
+
     return response != 0xE5 ? -1 : 0;
 }
 
@@ -341,6 +346,7 @@ static void spi_sd_start_writing_a_block(const void * buf) {
     SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 0 }.reg;
     while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
 
+    must_flush_write = 1;
     writing_a_block = 1;
     spi_send_nonblocking_start(buf, 512);
     card_overhead_numerator += 512;
@@ -548,7 +554,80 @@ int spi_sd_init(void) {
     return 0;
 }
 
+static int spi_sd_write_blocks_start(unsigned long long block_address) {
+    cs_low();
+    wait_for_card_ready();
+
+    const uint8_t response = command_and_r1_response(25, block_address);
+    if (response != 0) {
+        cs_high();
+        return -1;
+    }
+
+    /* extra byte prior to data packet */
+    spi_send((unsigned char[1]) { 0xff }, 1);
+
+    return 0;
+}
+
+static void spi_sd_write_blocks_end(void) {
+    /* send stop tran token */
+    spi_send((unsigned char[2]) { 0xfd, 0xff }, 2);
+
+    wait_for_card_ready();
+
+    cs_high();
+}
+
+static unsigned long long next_write_block_address = ULLONG_MAX;
+static const void * whitelisted_nonblocking_src = NULL;
+
+static int spi_sd_finish_multiblock_write_and_leave_enabled(void) {
+    if (next_write_block_address != ULLONG_MAX) {
+    /* this will block, but will internally call yield() and __WFI() */
+        if (-1 == spi_sd_flush_write_block()) return -1;
+
+        spi_sd_write_blocks_end();
+        next_write_block_address = ULLONG_MAX;
+    }
+    else spi_enable();
+
+    return 0;
+}
+
+void spi_sd_mark_pointer_for_non_blocking_write(const void * p) {
+    whitelisted_nonblocking_src = p;
+}
+
+int spi_sd_start_writing_next_block(const void * buf, const unsigned long long block_address) {
+    if (next_write_block_address != ULLONG_MAX) {
+        /* this will block, but will internally call yield() and __WFI() */
+        if (-1 == spi_sd_flush_write_block()) return -1;
+    }
+    else spi_enable();
+
+    if (next_write_block_address != block_address) {
+        if (ULLONG_MAX != next_write_block_address)
+            spi_sd_write_blocks_end();
+
+        if (-1 == spi_sd_write_blocks_start(block_address))
+            return -1;
+    }
+
+    spi_sd_start_writing_a_block(buf);
+    next_write_block_address = block_address + 1;
+
+    if (buf == whitelisted_nonblocking_src)
+        whitelisted_nonblocking_src = NULL;
+    else
+        if (-1 == spi_sd_flush_write_block()) return -1;
+
+    return 0;
+}
+
 int spi_sd_read_blocks(void * buf, unsigned long blocks, unsigned long long block_address) {
+    if (1 == spi_sd_finish_multiblock_write_and_leave_enabled()) return -1;
+
     cs_low();
     wait_for_card_ready();
 
@@ -600,70 +679,14 @@ int spi_sd_read_blocks(void * buf, unsigned long blocks, unsigned long long bloc
     if (blocks > 1) command_and_r1_response(12, 0);
 
     cs_high();
-    return 0;
-}
-
-static void spi_sd_write_pre_erase(unsigned long blocks) {
-    while (1) {
-        cs_low();
-        wait_for_card_ready();
-
-        const uint8_t cmd55_r1_response = command_and_r1_response(55, 0);
-
-        cs_high();
-
-        if (cmd55_r1_response > 1) continue;
-
-        cs_low();
-        wait_for_card_ready();
-
-        const uint8_t acmd23_r1_response = command_and_r1_response(23, blocks);
-
-        cs_high();
-
-        if (!acmd23_r1_response) break;
-    }
-}
-
-static int spi_sd_write_blocks_start(unsigned long long block_address) {
-    cs_low();
-    wait_for_card_ready();
-
-    const uint8_t response = command_and_r1_response(25, block_address);
-    if (response != 0) {
-        cs_high();
-        return -1;
-    }
-
-    /* extra byte prior to data packet */
-    spi_send((unsigned char[1]) { 0xff }, 1);
 
     return 0;
 }
 
-static void spi_sd_write_blocks_end(void) {
-    /* send stop tran token */
-    spi_send((unsigned char[2]) { 0xfd, 0xff }, 2);
+int spi_sd_flush_and_sleep(void) {
+    if (-1 == spi_sd_finish_multiblock_write_and_leave_enabled()) return -1;
 
-    wait_for_card_ready();
-
-    cs_high();
-}
-
-int spi_sd_write_blocks(const void * buf, const unsigned long blocks, const unsigned long long block_address) {
-    spi_sd_write_pre_erase(blocks);
-
-    if (-1 == spi_sd_write_blocks_start(block_address))
-        return -1;
-
-    for (size_t iblock = 0; iblock < blocks; iblock++) {
-        spi_sd_start_writing_a_block((void *)((unsigned char *)buf + 512 * iblock));
-
-        /* this will block, but will internally call yield() and __WFI() */
-        if (-1 == spi_sd_flush_write()) return -1;
-    }
-
-    spi_sd_write_blocks_end();
+    spi_disable();
 
     return 0;
 }

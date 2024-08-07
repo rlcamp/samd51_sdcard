@@ -7,11 +7,22 @@ extern "C" {
 int spi_sd_init(void);
 void spi_sd_shutdown(void);
 
-/* blocking...but uses dma internally and will probably expose the nonblocking api if needed */
 int spi_sd_read_blocks(void * buf, unsigned long blocks, unsigned long long block_address);
 
-/* convenience function that writes multiples of 512 bytes, blocking */
-int spi_sd_write_blocks(const void * buf, const unsigned long blocks, const unsigned long long block_address);
+/* possibly nonblocking, finalizes prior multi-block write transaction if necessary */
+int spi_sd_start_writing_next_block(const void * buf, const unsigned long long block_address);
+
+/* if this is called before the above function, with the same argument, then the subsequent
+ write of that pointer will be nonblocking. the intended use case is to allow an unmodified
+ intermediate layer such as fatfs to assume writes are blocking, which is necessary for its
+ writes of internal filesystem blocks, but allow application code which has an independent
+ guarantee that the pointed-to memory will not be modified for the duration of the
+ nonblocking write to continue to do work while the write takes place */
+void spi_sd_mark_pointer_for_non_blocking_write(const void * p);
+
+/* if it will be a while before the next card read/write (via fatfs or otherwise),
+ call this, which will finalize any multi-block transaction in progress */
+int spi_sd_flush_and_sleep(void);
 
 #ifdef __cplusplus
 }

@@ -9,6 +9,7 @@
 
 /* needed for INT_MAX, this will go away */
 #include <limits.h>
+
 #include <stdio.h>
 
 unsigned char diskio_verbose = 0;
@@ -33,7 +34,7 @@ DRESULT disk_read(BYTE pdrv, BYTE * buff, LBA_t sector, UINT count) {
     (void)pdrv;
 
     if (diskio_verbose)
-        fprintf(stderr, "%s(%d): reading %u blocks starting at %u\r\n", __func__, __LINE__, count, (unsigned)sector);
+        dprintf(2, "%s(%d): reading %u blocks starting at %u\r\n", __func__, __LINE__, count, (unsigned)sector);
     /* this will block, but will internally call yield() and __WFI() */
     return -1 == spi_sd_read_blocks(buff, count, sector) ? RES_ERROR : 0;
 }
@@ -41,8 +42,12 @@ DRESULT disk_read(BYTE pdrv, BYTE * buff, LBA_t sector, UINT count) {
 DRESULT disk_write(BYTE pdrv, const BYTE * buff, LBA_t sector, UINT count) {
     (void)pdrv;
     if (diskio_verbose)
-        fprintf(stderr, "%s(%d): writing %u blocks starting at %u\r\n", __func__, __LINE__, count, (unsigned)sector);
-    return -1 == spi_sd_write_blocks(buff, count, sector) ? RES_ERROR : 0;
+        dprintf(2, "%s(%d): writing %u blocks starting at %u\r\n", __func__, __LINE__, count, (unsigned)sector);
+
+    for (size_t iblock = 0; iblock < count; iblock++)
+        if (-1 == spi_sd_start_writing_next_block((void *)((unsigned char *)buff + 512 * iblock), sector + iblock)) return RES_ERROR;
+
+    return 0;
 }
 
 DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void * buff) {
