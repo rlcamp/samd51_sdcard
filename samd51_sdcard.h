@@ -20,6 +20,8 @@ int spi_sd_start_writing_next_block(const void * buf, const unsigned long long b
  nonblocking write to continue to do work while the write takes place */
 void spi_sd_mark_pointer_for_non_blocking_write(const void * p);
 
+void spi_sd_mark_pointer_for_pre_erase(const void * p, const unsigned long blocks);
+
 /* if it will be a while before the next card read/write (via fatfs or otherwise),
  call this, which will finalize any multi-block transaction in progress */
 int spi_sd_flush_and_sleep(void);

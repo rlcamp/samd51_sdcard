@@ -581,6 +581,30 @@ static void spi_sd_write_blocks_end(void) {
 
 static unsigned long long next_write_block_address = ULLONG_MAX;
 static const void * known_safe_nonblocking_src = NULL;
+static const void * known_pre_erase = NULL;
+static unsigned long known_pre_erase_blocks = 0;
+
+static void spi_sd_write_pre_erase(unsigned long blocks) {
+    while (1) {
+        cs_low();
+        wait_for_card_ready();
+
+         const uint8_t cmd55_r1_response = command_and_r1_response(55, 0);
+
+         cs_high();
+
+         if (cmd55_r1_response > 1) continue;
+
+         cs_low();
+        wait_for_card_ready();
+
+         const uint8_t acmd23_r1_response = command_and_r1_response(23, blocks);
+
+         cs_high();
+
+         if (!acmd23_r1_response) break;
+    }
+}
 
 static int spi_sd_finish_multiblock_write_and_leave_enabled(void) {
     if (next_write_block_address != ULLONG_MAX) {
@@ -593,6 +617,11 @@ static int spi_sd_finish_multiblock_write_and_leave_enabled(void) {
     else spi_enable();
 
     return 0;
+}
+
+void spi_sd_mark_pointer_for_pre_erase(const void * p, const unsigned long blocks) {
+    known_pre_erase = p;
+    known_pre_erase_blocks = blocks;
 }
 
 void spi_sd_mark_pointer_for_non_blocking_write(const void * p) {
@@ -609,6 +638,11 @@ int spi_sd_start_writing_next_block(const void * buf, const unsigned long long b
     if (next_write_block_address != block_address) {
         if (ULLONG_MAX != next_write_block_address)
             spi_sd_write_blocks_end();
+
+        if (buf == known_pre_erase) {
+            known_pre_erase = NULL;
+            spi_sd_write_pre_erase(known_pre_erase_blocks);
+        }
 
         if (-1 == spi_sd_write_blocks_start(block_address))
             return -1;
