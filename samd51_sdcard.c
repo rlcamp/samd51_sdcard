@@ -291,6 +291,16 @@ static void wait_for_card_ready(void) {
     while (spi_receive_one_byte_with_rx_enabled() != 0xff);
 }
 
+static int wait_for_card_ready_with_timeout(unsigned count) {
+    SERCOM1->SPI.CTRLB.bit.RXEN = 1;
+    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+
+    /* loop until card pulls MISO high for a full byte worth of clocks */
+    while (--count)
+        if (0xFF == spi_receive_one_byte_with_rx_enabled()) return 0;
+    return -1;
+}
+
 static int spi_sd_flush_write(void) {
     while (*(volatile char *)&writing_a_block) yield();
     /* ensure we don't prefetch the below value before the above condition becomes true */
@@ -442,7 +452,7 @@ int spi_sd_init(void) {
 
         /* send cmd0 */
         const uint8_t cmd0_r1_response = command_and_r1_response(0, 0);
-        wait_for_card_ready();
+        if (-1 == wait_for_card_ready_with_timeout(65536)) return -1;
 
         cs_high();
 
