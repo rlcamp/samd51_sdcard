@@ -675,8 +675,12 @@ int spi_sd_read_block(void * buf, unsigned long long block_address) {
     while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
 
     uint8_t result;
-    /* this can loop for a while */
-    while (0xFF == (result = spi_receive_one_byte_with_rx_enabled()));
+    /* this can loop for a while, the card is fetching the data we asked for */
+    do {
+        SERCOM1->SPI.DATA.bit.DATA = 0xff;
+        card_overhead_numerator++;
+        while (!SERCOM1->SPI.INTFLAG.bit.RXC);
+    } while (0xFF == (result = SERCOM1->SPI.DATA.bit.DATA));
 
     /* when we break out of the above loop, we've read the Data Token byte */
     if (0xFE != result) {
