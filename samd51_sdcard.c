@@ -659,58 +659,54 @@ int spi_sd_start_writing_next_block(const void * buf, const unsigned long long b
     return 0;
 }
 
-int spi_sd_read_blocks(void * buf, unsigned long blocks, unsigned long long block_address) {
+int spi_sd_read_block(void * buf, unsigned long long block_address) {
     if (1 == spi_sd_finish_multiblock_write_and_leave_enabled()) return -1;
+
+    /* TODO: use cmd18 and optimize for case when called with consecutive block addresses */
 
     cs_low();
     wait_for_card_ready();
 
-    /* send cmd17 or cmd18 */
-    if (command_and_r1_response(blocks > 1 ? 18 : 17, block_address) != 0) return -1;
+    /* send cmd17 and enable rx */
+    if (command_and_r1_response(17, block_address) != 0) return -1;
 
-    SERCOM1->SPI.CTRLB.bit.RXEN = 1;
-    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+    SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 1, .bit.LEN = 1 }.reg;
+    while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
 
-    /* clock out the response in 1 + 512 + 2 byte blocks */
-    for (size_t iblock = 0; iblock < blocks; iblock++) {
-        SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 1, .bit.LEN = 1 }.reg;
-        while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
+    uint8_t result;
+    /* this can loop for a while */
+    while (0xFF == (result = spi_receive_one_byte_with_rx_enabled()));
 
-        uint8_t result;
-        /* this can loop for a while */
-        while (0xFF == (result = spi_receive_one_byte_with_rx_enabled()));
-
-        /* when we break out of the above loop, we've read the Data Token byte */
-        if (0xFE != result) {
-            cs_high();
-            return -1;
-        }
-
-        SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 0 }.reg;
-        while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
-
-        uint32_t * restrict const block = ((uint32_t *)buf) + 128 * iblock;
-        for (size_t iword = 0; iword < 128; iword++) {
-            SERCOM1->SPI.DATA.bit.DATA = 0xffffffff;
-            card_overhead_numerator += 4;
-            while (!SERCOM1->SPI.INTFLAG.bit.RXC);
-            block[iword] = SERCOM1->SPI.DATA.bit.DATA;
-        }
-
-        while (!SERCOM1->SPI.INTFLAG.bit.TXC);
-        SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 1, .bit.LEN = 2 }.reg;
-        while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
-
-        /* read and discard two crc bytes */
-        SERCOM1->SPI.DATA.bit.DATA = 0xFFFF;
-        card_overhead_numerator += 2;
-        while (!SERCOM1->SPI.INTFLAG.bit.RXC);
-        const uint16_t crc_swapped = SERCOM1->SPI.DATA.bit.DATA;
-        (void)crc_swapped;
+    /* when we break out of the above loop, we've read the Data Token byte */
+    if (0xFE != result) {
+        cs_high();
+        return -1;
     }
 
-    /* if we sent cmd18, send cmd12 to stop */
-    if (blocks > 1) command_and_r1_response(12, 0);
+    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+    SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 0 }.reg;
+    while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
+
+    uint32_t * restrict const block = (uint32_t *)buf;
+    /* loop over 4-byte words in the 512-byte block */
+    for (size_t iword = 0; iword < 128; iword++) {
+        SERCOM1->SPI.DATA.bit.DATA = 0xffffffff;
+        card_overhead_numerator += 4;
+        while (!SERCOM1->SPI.INTFLAG.bit.RXC);
+        block[iword] = SERCOM1->SPI.DATA.bit.DATA;
+    }
+
+    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+    SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 1, .bit.LEN = 2 }.reg;
+    while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
+
+    /* read and discard two crc bytes */
+    SERCOM1->SPI.DATA.bit.DATA = 0xFFFF;
+    card_overhead_numerator += 2;
+    while (!SERCOM1->SPI.INTFLAG.bit.RXC);
+    const uint16_t crc_swapped = SERCOM1->SPI.DATA.bit.DATA;
+    (void)crc_swapped;
 
     cs_high();
 

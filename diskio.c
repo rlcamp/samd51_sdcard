@@ -35,8 +35,11 @@ DRESULT disk_read(BYTE pdrv, BYTE * buff, LBA_t sector, UINT count) {
 
     if (diskio_verbose)
         dprintf(2, "%s(%d): reading %u blocks starting at %u\r\n", __func__, __LINE__, count, (unsigned)sector);
-    /* this will block, but will internally call yield() and __WFI() */
-    return -1 == spi_sd_read_blocks(buff, count, sector) ? RES_ERROR : 0;
+
+    for (size_t iblock = 0; iblock < count; iblock++)
+        if (-1 == spi_sd_read_block((void *)((unsigned char *)buff + 512 * iblock), sector + iblock)) return RES_ERROR;
+
+    return 0;
 }
 
 DRESULT disk_write(BYTE pdrv, const BYTE * buff, LBA_t sector, UINT count) {

@@ -7,7 +7,7 @@ extern "C" {
 int spi_sd_init(void);
 void spi_sd_shutdown(void);
 
-int spi_sd_read_blocks(void * buf, unsigned long blocks, unsigned long long block_address);
+int spi_sd_read_block(void * buf, unsigned long long block_address);
 
 /* possibly nonblocking, finalizes prior multi-block write transaction if necessary */
 int spi_sd_start_writing_next_block(const void * buf, const unsigned long long block_address);
