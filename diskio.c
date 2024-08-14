@@ -41,8 +41,12 @@ DRESULT disk_read(BYTE pdrv, BYTE * buff, LBA_t sector, UINT count) {
 
 DRESULT disk_write(BYTE pdrv, const BYTE * buff, LBA_t sector, UINT count) {
     (void)pdrv;
-    if (diskio_verbose)
-        dprintf(2, "%s(%d): writing %u blocks starting at %u\r\n", __func__, __LINE__, count, (unsigned)sector);
+    if (diskio_verbose) {
+        static LBA_t sector_next = (LBA_t)-1;
+        if (sector != sector_next)
+            dprintf(2, "%s(%d): writing block(s) starting at %u\r\n", __func__, __LINE__, (unsigned)sector);
+        sector_next = sector + 1;
+    }
 
     for (size_t iblock = 0; iblock < count; iblock++)
         if (-1 == spi_sd_start_writing_next_block((void *)((unsigned char *)buff + 512 * iblock), sector + iblock)) return RES_ERROR;
