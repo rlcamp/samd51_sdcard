@@ -288,8 +288,18 @@ static void wait_for_card_ready(void) {
     SERCOM1->SPI.CTRLB.bit.RXEN = 1;
     while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
 
-    /* loop until card pulls MISO high for a full byte worth of clocks */
-    while (spi_receive_one_byte_with_rx_enabled() != 0xff);
+    SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 0 }.reg;
+    while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
+
+    do {
+        SERCOM1->SPI.DATA.bit.DATA = 0xffffffff;
+        card_overhead_numerator++;
+        while (!SERCOM1->SPI.INTFLAG.bit.RXC);
+    } while (SERCOM1->SPI.DATA.bit.DATA != 0xffffffff);
+
+    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+    SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 1, .bit.LEN = 1 }.reg;
+    while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
 }
 
 static int wait_for_card_ready_with_timeout(unsigned count) {
