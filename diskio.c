@@ -67,26 +67,3 @@ DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void * buff) {
     else return RES_PARERR;
     return 0;
 }
-
-#if __has_include(<samd51.h>)
-/* newer cmsis-atmel from upstream */
-#include <samd51.h>
-#else
-/* older cmsis-atmel from adafruit */
-#include <samd.h>
-#endif
-
-DWORD get_fattime(void) {
-    if (!RTC->MODE2.CTRLA.bit.ENABLE) return 0;
-
-    RTC->MODE2.CTRLA.bit.CLOCKSYNC = 1;
-    while (RTC->MODE2.SYNCBUSY.reg);
-    const RTC_MODE2_CLOCK_Type now = RTC->MODE2.CLOCK;
-
-    return ((now.bit.YEAR + 2000 - 1980) << 25U |
-            now.bit.MONTH << 21U |
-            now.bit.DAY << 16U |
-            now.bit.HOUR << 11U |
-            now.bit.MINUTE << 5U |
-            now.bit.SECOND >> 1U);
-}
