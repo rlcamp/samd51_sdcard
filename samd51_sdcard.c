@@ -1,4 +1,3 @@
-/* TODO: something is not working quite right here when running off a non-48 MHz clock */
 #include "samd51_sdcard.h"
 
 #if __has_include(<samd51.h>)
@@ -12,6 +11,7 @@
 #include <assert.h>
 #include <stddef.h>
 #include <limits.h>
+#include <stdio.h>
 
 #define BAUD_RATE_SLOW 250000
 #define BAUD_RATE_FAST 24000000ULL
@@ -21,6 +21,7 @@ static_assert(((48000000ULL / (2U * BAUD_RATE_FAST) - 1U) + 1U) * (2U * BAUD_RAT
               "baud rate not possible");
 
 #define IDMA_SPI_WRITE 2
+#define IDMA_SPI_READ 1
 
 /* do not use SECTION_DMAC_DESCRIPTOR because the linker script does not define hsram */
 __attribute__((weak, aligned(16))) DmacDescriptor dmac_descriptors[8] = { 0 }, dmac_writeback[8] = { 0 };
@@ -63,6 +64,24 @@ static void spi_dma_init(void) {
         .TRIGACT = DMAC_CHCTRLA_TRIGACT_BURST_Val, /* one burst per trigger */
         .BURSTLEN = DMAC_CHCTRLA_BURSTLEN_SINGLE_Val /* one burst = one beat */
     }}.reg;
+
+    /* reset channel */
+    DMAC->Channel[IDMA_SPI_READ].CHCTRLA.bit.ENABLE = 0;
+    DMAC->Channel[IDMA_SPI_READ].CHCTRLA.bit.SWRST = 1;
+
+    /* clear sw trigger */
+    DMAC->SWTRIGCTRL.reg &= ~(1 << IDMA_SPI_READ);
+
+    NVIC_EnableIRQ(DMAC_1_IRQn);
+    NVIC_SetPriority(DMAC_1_IRQn, (1 << __NVIC_PRIO_BITS) - 1);
+    static_assert(1 == IDMA_SPI_READ, "dmac channel isr mismatch");
+
+    DMAC->Channel[IDMA_SPI_READ].CHCTRLA.reg = (DMAC_CHCTRLA_Type) { .bit = {
+        .RUNSTDBY = 1,
+        .TRIGSRC = 0x06, /* trigger when sercom1 has received */
+        .TRIGACT = DMAC_CHCTRLA_TRIGACT_BURST_Val, /* one burst per trigger */
+        .BURSTLEN = DMAC_CHCTRLA_BURSTLEN_SINGLE_Val /* one burst = one beat */
+    }}.reg;
 }
 
 static void cs_high(void) {
@@ -83,6 +102,14 @@ static void spi_disable(void) {
 }
 
 static void spi_enable(void) {
+    /* disable rx */
+    SERCOM1->SPI.CTRLB.bit.RXEN = 0;
+    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+
+    /* put back in one-byte mode */
+    SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 1, .bit.LEN = 1 }.reg;
+    while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
+
     SERCOM1->SPI.CTRLA.bit.ENABLE = 1;
     while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
 
@@ -91,16 +118,9 @@ static void spi_enable(void) {
     PORT->Group[1].PINCFG[23] = (PORT_PINCFG_Type) { .bit = { .PMUXEN = 1, .DRVSTR = 1 } };
 }
 
-static void spi_change_baud_rate(unsigned long baudrate) {
-    spi_disable();
-
-    SERCOM1->SPI.BAUD.reg = 48000000ULL / (2U * baudrate) - 1U;
-
-    spi_enable();
-}
-
 void spi_sd_shutdown(void) {
     DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.ENABLE = 0;
+    DMAC->Channel[IDMA_SPI_READ].CHCTRLA.bit.ENABLE = 0;
 
     SERCOM1->SPI.CTRLA.bit.ENABLE = 0;
     while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
@@ -125,7 +145,7 @@ void spi_sd_shutdown(void) {
     PORT->Group[1].DIRCLR.reg = 1U << 23;
 }
 
-static void spi_init(unsigned long baudrate) {
+static void spi_init() {
     /* configure pin PA14 (silkscreen pin "D4" on the feather m4) as output for cs pin */
     PORT->Group[0].OUTSET.reg = 1U << 14;
     PORT->Group[0].PINCFG[14].reg = 0;
@@ -151,7 +171,7 @@ static void spi_init(unsigned long baudrate) {
     /* clear all interrupts */
     NVIC_ClearPendingIRQ(SERCOM1_1_IRQn);
 
-    MCLK->APBAMASK.reg |= MCLK_APBAMASK_SERCOM1;
+    MCLK->APBAMASK.bit.SERCOM1_ = 1;
 
     GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].bit.CHEN = 0;
     while (GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].bit.CHEN);
@@ -185,55 +205,21 @@ static void spi_init(unsigned long baudrate) {
 
     SERCOM1->SPI.CTRLC.bit.DATA32B = 1;
 
-    SERCOM1->SPI.BAUD.reg = 48000000ULL / (2U * baudrate) - 1U;
+    SERCOM1->SPI.BAUD.reg = 48000000ULL / (2U * BAUD_RATE_SLOW) - 1U;
 
     spi_dma_init();
+
+    SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 1, .bit.LEN = 1 }.reg;
+    while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
 
     /* enable spi peripheral */
     SERCOM1->SPI.CTRLA.bit.ENABLE = 1;
     while (SERCOM1->SPI.SYNCBUSY.bit.ENABLE);
 }
 
-static char writing_a_block, must_flush_write;
-static unsigned char card_write_response;
-
-static void spi_send_nonblocking_start(const void * buf, const size_t count) {
-    *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_WRITE) = (DmacDescriptor) {
-        .BTCNT.reg = count / 4,
-        .SRCADDR.reg = ((size_t)buf) + count,
-        .DSTADDR.reg = (size_t)&(SERCOM1->SPI.DATA.reg),
-        .BTCTRL = { .bit = {
-            .VALID = 1,
-            .BLOCKACT = DMAC_BTCTRL_BLOCKACT_INT_Val,
-            .SRCINC = 1,
-            .DSTINC = 0, /* write to the same register every time */
-            .BEATSIZE = DMAC_BTCTRL_BEATSIZE_WORD_Val, /* transfer 32 bits per beat */
-        }}
-    };
-
-    /* clear pending interrupt from before */
-    DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
-
-    /* enable interrupt on write completion */
-    DMAC->Channel[IDMA_SPI_WRITE].CHINTENSET.bit.TCMPL = 1;
-
-    /* reset the crc */
-    DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0 }.reg;
-    DMAC->CRCCHKSUM.reg = 0;
-    DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0x20 + IDMA_SPI_WRITE }.reg;
-
-    /* ensure changes to descriptors have propagated to sram prior to enabling peripheral */
-    __DSB();
-
-    /* setting this starts the transaction */
-    DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
-}
-
 __attribute((always_inline)) inline
 static uint8_t spi_receive_one_byte_with_rx_enabled(void) {
-    SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 1, .bit.LEN = 1 }.reg;
-    while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
-
+    while (!SERCOM1->SPI.INTFLAG.bit.DRE);
     SERCOM1->SPI.DATA.bit.DATA = 0xff;
     card_overhead_numerator++;
     while (!SERCOM1->SPI.INTFLAG.bit.RXC);
@@ -242,8 +228,43 @@ static uint8_t spi_receive_one_byte_with_rx_enabled(void) {
 
 static_assert(2 == IDMA_SPI_WRITE, "dmac channel isr mismatch");
 void DMAC_2_Handler(void) {
-    if (!(DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.bit.TCMPL)) return;
-    DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.reg = DMAC_CHINTENCLR_TCMPL;
+    /* note we don't clear the interrupt flag, we just disable the interrupt. this allows
+     the main thread to see that the interrupt has fired, while still waking from sleep
+     without needing sevonpend */
+    if (DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.bit.TCMPL)
+        DMAC->Channel[IDMA_SPI_WRITE].CHINTENCLR.reg = (DMAC_CHINTENCLR_Type) { .bit.TCMPL = 1 }.reg;
+}
+
+static void wait_for_card_ready(void) {
+    SERCOM1->SPI.CTRLB.bit.RXEN = 1;
+    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+
+    SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 0 }.reg;
+    while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
+
+    while (!SERCOM1->SPI.INTFLAG.bit.DRE);
+    SERCOM1->SPI.DATA.bit.DATA = 0xffffffff;
+    card_overhead_numerator += 4;
+    while (!SERCOM1->SPI.INTFLAG.bit.RXC);
+    if (0xffffffff != SERCOM1->SPI.DATA.bit.DATA)
+        do {
+            while (!SERCOM1->SPI.INTFLAG.bit.DRE);
+            SERCOM1->SPI.DATA.bit.DATA = 0xffffffff;
+            card_overhead_numerator += 4;
+            while (!SERCOM1->SPI.INTFLAG.bit.RXC) { __SEV(); yield(); };
+        } while (SERCOM1->SPI.DATA.bit.DATA != 0xffffffff);
+
+    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+    SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 1, .bit.LEN = 1 }.reg;
+    while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
+
+    SERCOM1->SPI.CTRLB.bit.RXEN = 0;
+    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+}
+
+static int spi_sd_flush_write_block(void) {
+    while (!DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.bit.TCMPL) yield();
+    DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.reg = (DMAC_CHINTFLAG_Type) { .bit.TCMPL = 1 }.reg;
 
     /* grab the CRC that the DMAC calculated on the outgoing 512 bytes... */
     while (DMAC->CRCSTATUS.bit.CRCBUSY);
@@ -271,102 +292,29 @@ void DMAC_2_Handler(void) {
     while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
 
     /* blocking receive of one byte */
+    while (!SERCOM1->SPI.INTFLAG.bit.DRE);
     SERCOM1->SPI.DATA.bit.DATA = 0xFF;
     card_overhead_numerator++;
     while (!SERCOM1->SPI.INTFLAG.bit.RXC);
-    card_write_response = SERCOM1->SPI.DATA.bit.DATA;
+    const unsigned char response = SERCOM1->SPI.DATA.bit.DATA & 0b11111;
 
-    writing_a_block = 0;
-
-    /* arm an321 page 22 fairly strongly suggests this is necessary prior to exception
-     return (or will be on future processors) when the first thing the processor wants
-     to do afterward depends on state changed in the handler */
-    __DSB();
-}
-
-static void wait_for_card_ready(void) {
-    SERCOM1->SPI.CTRLB.bit.RXEN = 1;
-    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
-
-    SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 0 }.reg;
-    while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
-
-    do {
-        SERCOM1->SPI.DATA.bit.DATA = 0xffffffff;
-        card_overhead_numerator++;
-        while (!SERCOM1->SPI.INTFLAG.bit.RXC);
-    } while (SERCOM1->SPI.DATA.bit.DATA != 0xffffffff);
-
-    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
-    SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 1, .bit.LEN = 1 }.reg;
-    while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
-}
-
-static int wait_for_card_ready_with_timeout(unsigned count) {
-    SERCOM1->SPI.CTRLB.bit.RXEN = 1;
-    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
-
-    /* loop until card pulls MISO high for a full byte worth of clocks */
-    while (--count)
-        if (0xFF == spi_receive_one_byte_with_rx_enabled()) return 0;
-    return -1;
-}
-
-static int spi_sd_flush_write_block(void) {
-    if (!must_flush_write) return 0;
-
-    while (*(volatile char *)&writing_a_block) yield();
-    /* ensure we don't prefetch the below value before the above condition becomes true */
-    __DMB();
-
-    const uint16_t response = card_write_response;
-
-    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
-    SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 0 }.reg;
-    while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
-
-    /* loop until card pulls MISO high for a full word worth of clocks */
-    do {
-        SERCOM1->SPI.DATA.bit.DATA = 0xFFFFFFFF;
-        card_overhead_numerator += 4;
-        while (!SERCOM1->SPI.INTFLAG.bit.RXC);
-    } while (SERCOM1->SPI.DATA.bit.DATA != 0xFFFFFFFF);
+    /* this leaves sercom in rx disabled, one byte mode */
+    wait_for_card_ready();
 
     /* assuming we spun on WFE in one of the above, re-raise the event register explicitly,
      so that caller does not have to assume calling this function may have cleared it */
     __SEV();
 
-    must_flush_write = 0;
+    if (0b00101 == response) return 0;
 
-    return response != 0xE5 ? -1 : 0;
-}
-
-static void spi_sd_start_writing_a_block(const void * buf) {
-    SERCOM1->SPI.CTRLB.bit.RXEN = 0;
-    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
-
-    SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 1, .bit.LEN = 1 }.reg;
-    while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
-
-    while (!SERCOM1->SPI.INTFLAG.bit.DRE);
-    SERCOM1->SPI.DATA.bit.DATA = 0xfc;
-    card_overhead_numerator++;
-
-    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
-    SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 0 }.reg;
-    while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
-
-    must_flush_write = 1;
-    writing_a_block = 1;
-    spi_send_nonblocking_start(buf, 512);
-    card_overhead_numerator += 512;
-    card_overhead_denominator += 512;
+    else if (0b01011 == response)
+        dprintf(2, "%s: bad crc\r\n", __func__);
+    else if (0b01011 == response)
+        dprintf(2, "%s: error 0x%x\r\n", __func__, response);
+    return -1;
 }
 
 static void spi_send(const void * buf, const size_t size) {
-    SERCOM1->SPI.CTRLB.bit.RXEN = 0;
-    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
-
     const size_t whole_words = size / 4, rem = size % 4;
 
     if (whole_words) {
@@ -386,12 +334,16 @@ static void spi_send(const void * buf, const size_t size) {
         while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
 
         const char * in = ((const char *)buf) + whole_words * 4;
+        while (!SERCOM1->SPI.INTFLAG.bit.DRE);
         SERCOM1->SPI.DATA.bit.DATA = (3 == rem ? in[0] | in[1] << 8U | in[2] << 16U :
                                       2 == rem ? in[0] | in[1] << 8U : in[0]);
         /* when sending one byte in 32 bit mode we apparently need to wait for TXC, not DRE */
         while (!SERCOM1->SPI.INTFLAG.bit.TXC);
     }
     card_overhead_numerator += size;
+
+    SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 1, .bit.LEN = 1 }.reg;
+    while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
 }
 
 static uint32_t spi_receive_uint32be(void) {
@@ -401,10 +353,18 @@ static uint32_t spi_receive_uint32be(void) {
     SERCOM1->SPI.CTRLB.bit.RXEN = 1;
     while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
 
+    while (!SERCOM1->SPI.INTFLAG.bit.DRE);
     SERCOM1->SPI.DATA.bit.DATA = 0xffffffff;
     card_overhead_numerator += 4;
     while (!SERCOM1->SPI.INTFLAG.bit.RXC);
     const uint32_t bits = SERCOM1->SPI.DATA.bit.DATA;
+
+    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+    SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 1, .bit.LEN = 1 }.reg;
+    while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
+
+    SERCOM1->SPI.CTRLB.bit.RXEN = 0;
+    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
 
     return __builtin_bswap32(bits);
 }
@@ -414,7 +374,14 @@ static uint8_t r1_response(void) {
     while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
 
     uint8_t result, attempts = 0;
+    /* sd and mmc agree on max 8 attempts, mmc requires at least two attempts */
     while (0xFF == (result = spi_receive_one_byte_with_rx_enabled()) && attempts++ < 8);
+
+    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+
+    SERCOM1->SPI.CTRLB.bit.RXEN = 0;
+    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+
     return result;
 }
 
@@ -432,54 +399,57 @@ static unsigned char crc7_left_shifted(const unsigned char * restrict const mess
     return crc & 0xfe;
 }
 
-static uint8_t command_and_r1_response(const uint8_t cmd, const uint32_t arg) {
+static void send_command_with_crc7(const uint8_t cmd, const uint32_t arg) {
     unsigned char msg[6] = { cmd | 0x40, arg >> 24, arg >> 16, arg >> 8, arg, 0x01 };
     msg[5] |= crc7_left_shifted(msg, 5);
 
     spi_send(msg, 6);
+}
 
-    /* CMD12 wants an extra byte prior to the response */
-    if (12 == cmd) spi_send((unsigned char[1]) { 0xff }, 1);
-
+static uint8_t command_and_r1_response(const uint8_t cmd, const uint32_t arg) {
+    send_command_with_crc7(cmd, arg);
     return r1_response();
 }
 
-int spi_sd_init(void) {
-    card_overhead_numerator = 0;
-    card_overhead_denominator = 0;
-    /* spin for the recommended 1 ms, assuming each loop iteration takes at least 2 cycles */
-    /* TODO: replace with some other guarantee that it has been > 1 ms since powerup */
-    for (size_t idelay = 0; idelay < F_CPU / 2048; idelay++) asm volatile("" :::);
+void spi_sd_restore_baud_rate(void) {
+    SERCOM1->SPI.BAUD.reg = 48000000ULL / (2U * (BAUD_RATE_FAST)) - 1U;
+}
 
-    spi_init(BAUD_RATE_SLOW);
+int spi_sd_init(unsigned baud_rate_reduction) {
+    /* NOTE: we need to not call this until it has been about 1 ms since power was applied */
+    spi_init();
 
     /* clear miso */
     cs_low();
     spi_send((unsigned char[1]) { 0xff }, 1);
-
     cs_high();
 
     /* and then clock out at least 74 cycles at 100-400 kBd with cs pin held high */
     spi_send((unsigned char[10]) { [0 ... 9] = 0xFF }, 10);
 
-    /* cmd0 */
+    /* cmd0, software reset. TODO: is looping this even necessary? */
     for (size_t ipass = 0;; ipass++) {
+        /* if card likely not present, give up */
+        if (ipass > 1024) {
+            spi_disable();
+            return -1;
+        }
         cs_low();
 
         /* send cmd0 */
         const uint8_t cmd0_r1_response = command_and_r1_response(0, 0);
-        if (-1 == wait_for_card_ready_with_timeout(65536)) return -1;
-
         cs_high();
 
         if (0x01 == cmd0_r1_response) break;
-
-        /* if card likely not present, give up */
-        if (1024 == ipass && 255 == cmd0_r1_response) return -1;
     }
 
-    /* cmd8 */
-    while (1) {
+    /* cmd8, check voltage range and test pattern */
+    for (size_t ipass = 0;; ipass++) {
+        if (ipass > 3) {
+            /* TODO: find out how many times we should try this before giving up */
+            spi_disable();
+            return -1;
+        }
         cs_low();
         wait_for_card_ready();
 
@@ -496,8 +466,23 @@ int spi_sd_init(void) {
         if (0x1AA == response) break;
     }
 
-    /* cmd55, then acmd41 */
-    while (1) {
+    /* cmd59, re-enable crc feature, which is disabled by cmd0 */
+    cs_low();
+    wait_for_card_ready();
+    if (command_and_r1_response(59, 1) > 1) {
+        cs_high();
+        spi_disable();
+        return -1;
+    }
+    cs_high();
+
+    /* cmd55, then acmd41, init. must loop this until the response is 0 */
+    for (size_t ipass = 0;; ipass++) {
+        if (ipass > BAUD_RATE_SLOW / (8 * 20)) {
+            /* each pass takes about 20 bytes minimum, give up after one second */
+            spi_disable();
+            return -1;
+        }
         cs_low();
         wait_for_card_ready();
 
@@ -515,62 +500,49 @@ int spi_sd_init(void) {
         if (!acmd41_r1_response) break;
     }
 
-    spi_change_baud_rate(BAUD_RATE_FAST);
+    /* now bump the baud rate up to the max allowable speed */
+    spi_disable();
+    SERCOM1->SPI.BAUD.reg = 48000000ULL / (2U * BAUD_RATE_FAST) - 1U + baud_rate_reduction;
+    spi_enable();
 
-    /* cmd58 */
-    while (1) {
+    /* TODO: if any of the following fail, restart the procedure with a lower baud rate */
+    do {
+        /* cmd58, read ocr register */
         cs_low();
         wait_for_card_ready();
-
-        const uint8_t r1_response = command_and_r1_response(58, 0);
-
-        if (r1_response > 1) {
-            cs_high();
-            continue;
-        }
+        if (command_and_r1_response(58, 0) > 1) break;
 
         const unsigned int ocr = spi_receive_uint32be();
         (void)ocr;
         cs_high();
 
-        break;
-    }
-
-    /* cmd16 */
-    while (1) {
+        /* cmd16, set block length to 512 */
         cs_low();
         wait_for_card_ready();
-
-        const uint8_t r1_response = command_and_r1_response(16, 512);
+        if (command_and_r1_response(16, 512) > 1) break;
         cs_high();
 
-        if (r1_response <= 1) break;
-    }
-
-#if 1
-    /* cmd59 */
-    while (1) {
-        cs_low();
-        wait_for_card_ready();
-
-        const uint8_t r1_response = command_and_r1_response(59, 1);
-
+        /* we get here on overall success of this function */
         cs_high();
+        spi_disable();
+        return 0;
+    } while(0);
 
-        if (r1_response <= 1) break;
-    }
-#endif
-
-    return 0;
+    /* we get here on failure */
+    cs_high();
+    spi_disable();
+    return -1;
 }
 
-static int spi_sd_write_blocks_start(unsigned long long block_address) {
+int spi_sd_write_blocks_start(unsigned long long block_address) {
+    spi_enable();
     cs_low();
     wait_for_card_ready();
 
     const uint8_t response = command_and_r1_response(25, block_address);
     if (response != 0) {
         cs_high();
+        spi_disable();
         return -1;
     }
 
@@ -580,156 +552,250 @@ static int spi_sd_write_blocks_start(unsigned long long block_address) {
     return 0;
 }
 
-static void spi_sd_write_blocks_end(void) {
+void spi_sd_write_blocks_end(void) {
     /* send stop tran token */
     spi_send((unsigned char[2]) { 0xfd, 0xff }, 2);
 
     wait_for_card_ready();
 
     cs_high();
+    spi_disable();
 }
 
-static unsigned long long next_write_block_address = ULLONG_MAX;
-static const void * known_safe_nonblocking_src = NULL;
-static const void * known_pre_erase = NULL;
-static unsigned long known_pre_erase_blocks = 0;
+int spi_sd_write_pre_erase(unsigned long blocks) {
+    spi_enable();
+    cs_low();
+    wait_for_card_ready();
 
-static void spi_sd_write_pre_erase(unsigned long blocks) {
-    while (1) {
-        cs_low();
-        wait_for_card_ready();
+    const uint8_t cmd55_r1_response = command_and_r1_response(55, 0);
+    cs_high();
 
-         const uint8_t cmd55_r1_response = command_and_r1_response(55, 0);
-
-         cs_high();
-
-         if (cmd55_r1_response > 1) continue;
-
-         cs_low();
-        wait_for_card_ready();
-
-         const uint8_t acmd23_r1_response = command_and_r1_response(23, blocks);
-
-         cs_high();
-
-         if (!acmd23_r1_response) break;
+    if (cmd55_r1_response > 1) {
+        spi_disable();
+        return -1;
     }
-}
-
-static int spi_sd_finish_multiblock_write_and_leave_enabled(void) {
-    if (next_write_block_address != ULLONG_MAX) {
-    /* this will block, but will internally call yield() and __WFI() */
-        if (-1 == spi_sd_flush_write_block()) return -1;
-
-        spi_sd_write_blocks_end();
-        next_write_block_address = ULLONG_MAX;
-    }
-    else spi_enable();
-
-    return 0;
-}
-
-void spi_sd_mark_pointer_for_pre_erase(const void * p, const unsigned long blocks) {
-    known_pre_erase = p;
-    known_pre_erase_blocks = blocks;
-}
-
-void spi_sd_mark_pointer_for_non_blocking_write(const void * p) {
-    known_safe_nonblocking_src = p;
-}
-
-int spi_sd_start_writing_next_block(const void * buf, const unsigned long long block_address) {
-    if (next_write_block_address != ULLONG_MAX) {
-        /* this will block, but will internally call yield() and __WFI() */
-        if (-1 == spi_sd_flush_write_block()) return -1;
-    }
-    else spi_enable();
-
-    if (next_write_block_address != block_address) {
-        if (ULLONG_MAX != next_write_block_address)
-            spi_sd_write_blocks_end();
-
-        if (buf == known_pre_erase) {
-            known_pre_erase = NULL;
-            spi_sd_write_pre_erase(known_pre_erase_blocks);
-        }
-
-        if (-1 == spi_sd_write_blocks_start(block_address))
-            return -1;
-    }
-
-    spi_sd_start_writing_a_block(buf);
-    next_write_block_address = block_address + 1;
-
-    if (buf == known_safe_nonblocking_src)
-        known_safe_nonblocking_src = NULL;
-    else
-        if (-1 == spi_sd_flush_write_block()) return -1;
-
-    return 0;
-}
-
-int spi_sd_read_block(void * buf, unsigned long long block_address) {
-    if (1 == spi_sd_finish_multiblock_write_and_leave_enabled()) return -1;
-
-    /* TODO: use cmd18 and optimize for case when called with consecutive block addresses */
 
     cs_low();
     wait_for_card_ready();
 
-    /* send cmd17 and enable rx */
-    if (command_and_r1_response(17, block_address) != 0) return -1;
+    const uint8_t acmd23_r1_response = command_and_r1_response(23, blocks);
 
-    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
-    SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 1, .bit.LEN = 1 }.reg;
-    while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
+    cs_high();
+    spi_disable();
 
-    uint8_t result;
-    /* this can loop for a while, the card is fetching the data we asked for */
-    do {
-        SERCOM1->SPI.DATA.bit.DATA = 0xff;
-        card_overhead_numerator++;
-        while (!SERCOM1->SPI.INTFLAG.bit.RXC);
-    } while (0xFF == (result = SERCOM1->SPI.DATA.bit.DATA));
+    return acmd23_r1_response ? -1 : 0;
+}
 
-    /* when we break out of the above loop, we've read the Data Token byte */
-    if (0xFE != result) {
-        cs_high();
-        return -1;
-    }
+static void spi_sd_start_writing_a_block(const void * buf) {
+    while (!SERCOM1->SPI.INTFLAG.bit.DRE);
+    SERCOM1->SPI.DATA.bit.DATA = 0xfc;
+    card_overhead_numerator++;
 
     while (!SERCOM1->SPI.INTFLAG.bit.TXC);
     SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 0 }.reg;
     while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
 
-    uint32_t * restrict const block = (uint32_t *)buf;
-    /* loop over 4-byte words in the 512-byte block */
-    for (size_t iword = 0; iword < 128; iword++) {
-        SERCOM1->SPI.DATA.bit.DATA = 0xffffffff;
-        card_overhead_numerator += 4;
-        while (!SERCOM1->SPI.INTFLAG.bit.RXC);
-        block[iword] = SERCOM1->SPI.DATA.bit.DATA;
+    *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_WRITE) = (DmacDescriptor) {
+        .BTCNT.reg = 512 / 4,
+        .SRCADDR.reg = ((size_t)buf) + 512,
+        .DSTADDR.reg = (size_t)&(SERCOM1->SPI.DATA.reg),
+        .BTCTRL = { .bit = {
+            .VALID = 1,
+            .BLOCKACT = DMAC_BTCTRL_BLOCKACT_INT_Val,
+            .SRCINC = 1,
+            .DSTINC = 0, /* write to the same register every time */
+            .BEATSIZE = DMAC_BTCTRL_BEATSIZE_WORD_Val, /* transfer 32 bits per beat */
+        }}
+    };
+
+    /* clear pending interrupt from before */
+    DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.reg = (DMAC_CHINTFLAG_Type) { .bit.TCMPL = 1 }.reg;
+
+    /* enable interrupt on write completion */
+    DMAC->Channel[IDMA_SPI_WRITE].CHINTENSET.reg = (DMAC_CHINTENSET_Type) { .bit.TCMPL = 1 }.reg;
+
+    /* reset the crc */
+    DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0 }.reg;
+    DMAC->CRCCHKSUM.reg = 0;
+    DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0x20 + IDMA_SPI_WRITE }.reg;
+
+    /* ensure changes to descriptors have propagated to sram prior to enabling peripheral */
+    __DSB();
+
+    /* setting this starts the transaction */
+    DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
+
+    card_overhead_numerator += 512;
+    card_overhead_denominator += 512;
+}
+
+int spi_sd_write_some_blocks(const void * buf, const unsigned long blocks) {
+    for (size_t iblock = 0; iblock < blocks; iblock++) {
+        spi_sd_start_writing_a_block((void *)((unsigned char *)buf + 512 * iblock));
+        if (-1 == spi_sd_flush_write_block()) {
+            cs_high();
+            spi_disable();
+            return -1;
+        }
     }
-
-    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
-    SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 1, .bit.LEN = 2 }.reg;
-    while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
-
-    /* read and discard two crc bytes */
-    SERCOM1->SPI.DATA.bit.DATA = 0xFFFF;
-    card_overhead_numerator += 2;
-    while (!SERCOM1->SPI.INTFLAG.bit.RXC);
-    const uint16_t crc_swapped = SERCOM1->SPI.DATA.bit.DATA;
-    (void)crc_swapped;
-
-    cs_high();
 
     return 0;
 }
 
-int spi_sd_flush_and_sleep(void) {
-    if (-1 == spi_sd_finish_multiblock_write_and_leave_enabled()) return -1;
+int spi_sd_write_blocks(const void * buf, const unsigned long blocks, const unsigned long long block_address) {
+    if (-1 == spi_sd_write_blocks_start(block_address) ||
+        -1 == spi_sd_write_some_blocks(buf, blocks))
+        return -1;
 
+    spi_sd_write_blocks_end();
+
+    return 0;
+}
+
+int spi_sd_read_blocks(void * buf, unsigned long blocks, unsigned long long block_address) {
+    spi_enable();
+    cs_low();
+    wait_for_card_ready();
+
+    /* send cmd17 or cmd18 */
+    if (command_and_r1_response(blocks > 1 ? 18 : 17, block_address) != 0) {
+        cs_high();
+        spi_disable();
+        return -1;
+    }
+
+    SERCOM1->SPI.CTRLB.bit.RXEN = 1;
+    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+
+    /* clock out the response in 1 + 512 + 2 byte blocks */
+    for (size_t iblock = 0; iblock < blocks; iblock++) {
+        uint8_t result;
+        /* this can loop for a while */
+        while (0xFF == (result = spi_receive_one_byte_with_rx_enabled()));
+
+        /* when we break out of the above loop, we've read the Data Token byte */
+        if (0xFE != result) {
+            while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+            SERCOM1->SPI.CTRLB.bit.RXEN = 0;
+            while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+
+            cs_high();
+            spi_disable();
+            return -1;
+        }
+
+        while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+        SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 0 }.reg;
+        while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
+
+        uint32_t * restrict const block = ((uint32_t *)buf) + 128 * iblock;
+
+        *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_READ) = (DmacDescriptor) {
+            .BTCNT.reg = 512 / 4,
+            .SRCADDR.reg = (size_t)&(SERCOM1->SPI.DATA.reg),
+            .DSTADDR.reg = ((size_t)block) + 512,
+            .BTCTRL = { .bit = {
+                .VALID = 1,
+                .BLOCKACT = DMAC_BTCTRL_BLOCKACT_INT_Val,
+                .SRCINC = 0,
+                .DSTINC = 1, /* write to the same register every time */
+                .BEATSIZE = DMAC_BTCTRL_BEATSIZE_WORD_Val, /* transfer 32 bits per beat */
+            }}
+        };
+
+        /* clear pending interrupt from before */
+        DMAC->Channel[IDMA_SPI_READ].CHINTFLAG.reg = (DMAC_CHINTFLAG_Type) { .bit.TCMPL = 1 }.reg;
+
+        DMAC->Channel[IDMA_SPI_READ].CHINTENCLR.reg = (DMAC_CHINTENCLR_Type) { .bit.TCMPL = 1 }.reg;
+
+        /* reset the crc */
+        DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0 }.reg;
+        DMAC->CRCCHKSUM.reg = 0;
+        DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0x20 + IDMA_SPI_READ }.reg;
+
+        static const uint32_t dummy = 0xffffffff;
+        *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_WRITE) = (DmacDescriptor) {
+            .BTCNT.reg = 512 / 4,
+            .SRCADDR.reg = (size_t)&dummy,
+            .DSTADDR.reg = (size_t)&(SERCOM1->SPI.DATA.reg),
+            .BTCTRL = { .bit = {
+                .VALID = 1,
+                .BLOCKACT = DMAC_BTCTRL_BLOCKACT_INT_Val,
+                .SRCINC = 0,
+                .DSTINC = 0, /* write to the same register every time */
+                .BEATSIZE = DMAC_BTCTRL_BEATSIZE_WORD_Val, /* transfer 32 bits per beat */
+            }}
+        };
+
+        /* clear pending interrupt from before */
+        DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.reg = (DMAC_CHINTFLAG_Type) { .bit.TCMPL = 1 }.reg;
+
+        /* enable interrupt on write completion */
+        DMAC->Channel[IDMA_SPI_WRITE].CHINTENSET.reg = (DMAC_CHINTENSET_Type) { .bit.TCMPL = 1 }.reg;
+
+        /* ensure changes to descriptors have propagated to sram prior to enabling peripheral */
+        __DSB();
+
+        /* setting this starts the transaction */
+        DMAC->Channel[IDMA_SPI_READ].CHCTRLA.bit.ENABLE = 1;
+        DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
+
+        /* wait here until dma transaction finishes */
+        while (!(DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.bit.TCMPL)) yield();
+        DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.reg = (DMAC_CHINTFLAG_Type) { .bit.TCMPL = 1 }.reg;
+
+        while (!(DMAC->Channel[IDMA_SPI_READ].CHINTFLAG.bit.TCMPL));
+        DMAC->Channel[IDMA_SPI_READ].CHINTFLAG.reg = (DMAC_CHINTFLAG_Type) { .bit.TCMPL = 1 }.reg;
+        DMAC->Channel[IDMA_SPI_READ].CHINTENCLR.reg = (DMAC_CHINTENCLR_Type) { .bit.TCMPL = 1 }.reg;
+
+        /* grab the CRC that the DMAC calculated on the outgoing 512 bytes... */
+        while (DMAC->CRCSTATUS.bit.CRCBUSY);
+        const uint16_t crc = DMAC->CRCCHKSUM.reg;
+
+        while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+        SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 1, .bit.LEN = 2 }.reg;
+        while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
+
+        card_overhead_numerator += 512;
+
+        /* read and discard two crc bytes */
+        while (!SERCOM1->SPI.INTFLAG.bit.DRE);
+        SERCOM1->SPI.DATA.bit.DATA = 0xFFFF;
+        card_overhead_numerator += 2;
+        while (!SERCOM1->SPI.INTFLAG.bit.RXC);
+        const uint16_t crc_swapped = SERCOM1->SPI.DATA.bit.DATA;
+        const uint16_t crc_received = __builtin_bswap16(crc_swapped);
+
+        while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+        SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 1, .bit.LEN = 1 }.reg;
+        while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
+
+        if (crc_received != crc) {
+            SERCOM1->SPI.CTRLB.bit.RXEN = 0;
+            while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+
+            cs_high();
+            spi_disable();
+            dprintf(2, "%s: bad crc\r\n", __func__);
+            return -1;
+        }
+    }
+
+    SERCOM1->SPI.CTRLB.bit.RXEN = 0;
+    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+
+    /* if we sent cmd18, send cmd12 to stop */
+    if (blocks > 1) {
+        send_command_with_crc7(12, 0);
+
+        /* CMD12 wants an extra byte prior to the response */
+        spi_send((unsigned char[1]) { 0xff }, 1);
+
+        (void)r1_response();
+        wait_for_card_ready();
+    }
+
+    cs_high();
     spi_disable();
 
     return 0;
