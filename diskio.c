@@ -24,7 +24,13 @@ DSTATUS disk_status(BYTE pdrv) {
 DSTATUS disk_initialize(BYTE pdrv) {
     (void)pdrv;
     if (!diskio_initted) {
-        if (-1 == spi_sd_init()) return STA_NOINIT;
+        for (size_t ipass = 0;; ipass++) {
+            if (ipass > 0 && diskio_verbose)
+                dprintf(2, "%s: retrying at lower baud rate %u\r\n", __func__, (unsigned)ipass + 1);
+            if (spi_sd_init(ipass) != -1) break;
+            if (ipass > 3) return STA_NOINIT;
+        }
+        spi_sd_restore_baud_rate();
     }
     diskio_initted = 1;
     return 0;
@@ -36,9 +42,19 @@ DRESULT disk_read(BYTE pdrv, BYTE * buff, LBA_t sector, UINT count) {
     if (diskio_verbose)
         dprintf(2, "%s(%d): reading %u blocks starting at %u\r\n", __func__, __LINE__, count, (unsigned)sector);
 
-    for (size_t iblock = 0; iblock < count; iblock++)
-        if (-1 == spi_sd_read_block((void *)((unsigned char *)buff + 512 * iblock), sector + iblock)) return RES_ERROR;
+    for (size_t ipass = 0;; ipass++) {
+        if (ipass > 0) {
+            if (diskio_verbose)
+                dprintf(2, "%s: retrying at lower baud rate %u\r\n", __func__, (unsigned)ipass + 1);
+            if (-1 == spi_sd_init(ipass)) continue;
+        }
 
+        /* this will block, but will internally call yield() and __WFI() */
+        if (spi_sd_read_blocks(buff, count, sector) != -1) break;
+        if (ipass > 3) return RES_ERROR;
+    }
+
+    spi_sd_restore_baud_rate();
     return 0;
 }
 
@@ -51,9 +67,19 @@ DRESULT disk_write(BYTE pdrv, const BYTE * buff, LBA_t sector, UINT count) {
         sector_next = sector + 1;
     }
 
-    for (size_t iblock = 0; iblock < count; iblock++)
-        if (-1 == spi_sd_start_writing_next_block((void *)((unsigned char *)buff + 512 * iblock), sector + iblock)) return RES_ERROR;
+    for (size_t ipass = 0;; ipass++) {
+        if (ipass > 0) {
+            if (diskio_verbose)
+                dprintf(2, "%s: retrying at lower baud rate %u\r\n", __func__, (unsigned)ipass + 1);
+            if (-1 == spi_sd_init(ipass)) continue;
+        }
 
+        if (spi_sd_write_blocks(buff, count, sector) != -1) break;
+        if (ipass > 3) return RES_ERROR;
+
+    }
+
+    spi_sd_restore_baud_rate();
     return 0;
 }
 
