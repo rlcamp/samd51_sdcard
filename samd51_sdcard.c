@@ -598,14 +598,15 @@ static void spi_sd_start_writing_a_block(const void * buf) {
     SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 0 }.reg;
     while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
 
+    static const uint32_t zero_word = 0;
     *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_WRITE) = (DmacDescriptor) {
         .BTCNT.reg = 512 / 4,
-        .SRCADDR.reg = ((size_t)buf) + 512,
+        .SRCADDR.reg = buf ? ((size_t)buf) + 512 : (size_t)&zero_word,
         .DSTADDR.reg = (size_t)&(SERCOM1->SPI.DATA.reg),
         .BTCTRL = { .bit = {
             .VALID = 1,
             .BLOCKACT = DMAC_BTCTRL_BLOCKACT_INT_Val,
-            .SRCINC = 1,
+            .SRCINC = buf ? 1 : 0,
             .DSTINC = 0, /* write to the same register every time */
             .BEATSIZE = DMAC_BTCTRL_BEATSIZE_WORD_Val, /* transfer 32 bits per beat */
         }}
@@ -634,7 +635,7 @@ static void spi_sd_start_writing_a_block(const void * buf) {
 
 int spi_sd_write_some_blocks(const void * buf, const unsigned long blocks) {
     for (size_t iblock = 0; iblock < blocks; iblock++) {
-        spi_sd_start_writing_a_block((void *)((unsigned char *)buf + 512 * iblock));
+        spi_sd_start_writing_a_block(buf ? (void *)((unsigned char *)buf + 512 * iblock) : NULL);
         if (-1 == spi_sd_flush_write_block()) {
             cs_high();
             spi_disable();
