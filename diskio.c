@@ -12,6 +12,8 @@
 
 #include <stdio.h>
 
+size_t fatfs_sectors_read = 0, fatfs_sectors_written = 0;
+
 unsigned char diskio_verbose = 0;
 
 unsigned char diskio_initted = 0;
@@ -36,8 +38,37 @@ DSTATUS disk_initialize(BYTE pdrv) {
     return 0;
 }
 
+static LBA_t deferred_zeros_sector_start = 0;
+static UINT deferred_zeros_sector_count = 0;
+
+static DRESULT flush_deferred_zeros(void) {
+    const UINT count = deferred_zeros_sector_count;
+    deferred_zeros_sector_count = 0;
+
+    for (size_t ipass = 0;; ipass++) {
+        if (ipass > 0) {
+            if (diskio_verbose)
+                dprintf(2, "%s: retrying at lower baud rate %u\r\n", __func__, (unsigned)ipass + 1);
+            if (-1 == spi_sd_init(ipass)) continue;
+        }
+
+        fatfs_sectors_written += count;
+
+        if (spi_sd_write_blocks(NULL, count, deferred_zeros_sector_start) != -1) break;
+        if (ipass > 3) return RES_ERROR;
+    }
+
+    spi_sd_restore_baud_rate();
+    return 0;
+}
+
 DRESULT disk_read(BYTE pdrv, BYTE * buff, LBA_t sector, UINT count) {
     (void)pdrv;
+
+    if (deferred_zeros_sector_count) {
+        const DRESULT res = flush_deferred_zeros();
+        if (res) return res;
+    }
 
     if (diskio_verbose)
         dprintf(2, "%s(%d): reading %u blocks starting at %u\r\n", __func__, __LINE__, count, (unsigned)sector);
@@ -49,6 +80,8 @@ DRESULT disk_read(BYTE pdrv, BYTE * buff, LBA_t sector, UINT count) {
             if (-1 == spi_sd_init(ipass)) continue;
         }
 
+        fatfs_sectors_read += count;
+
         /* this will block, but will internally call yield() and __WFI() */
         if (spi_sd_read_blocks(buff, count, sector) != -1) break;
         if (ipass > 3) return RES_ERROR;
@@ -58,14 +91,30 @@ DRESULT disk_read(BYTE pdrv, BYTE * buff, LBA_t sector, UINT count) {
     return 0;
 }
 
+static int buffer_points_to_all_zeros(const BYTE * buff, UINT count) {
+    for (size_t ibyte = 0; ibyte < 512 * count; ibyte++)
+        if (buff[ibyte]) return 0;
+    return 1;
+}
+
 DRESULT disk_write(BYTE pdrv, const BYTE * buff, LBA_t sector, UINT count) {
     (void)pdrv;
-    if (diskio_verbose) {
-        static LBA_t sector_next = (LBA_t)-1;
-        if (sector != sector_next)
-            dprintf(2, "%s(%d): writing block(s) starting at %u\r\n", __func__, __LINE__, (unsigned)sector);
-        sector_next = sector + 1;
+
+    if (!deferred_zeros_sector_count || sector == deferred_zeros_sector_start + deferred_zeros_sector_count) {
+        if (buffer_points_to_all_zeros(buff, count)) {
+            if (!deferred_zeros_sector_count)
+                deferred_zeros_sector_start = sector;
+            deferred_zeros_sector_count += count;
+            return 0;
+        }
     }
+    else if (deferred_zeros_sector_count) {
+        const DRESULT res = flush_deferred_zeros();
+        if (res) return res;
+    }
+
+    if (diskio_verbose)
+        dprintf(2, "%s(%d): writing block(s) starting at %u\r\n", __func__, __LINE__, (unsigned)sector);
 
     for (size_t ipass = 0;; ipass++) {
         if (ipass > 0) {
@@ -73,6 +122,8 @@ DRESULT disk_write(BYTE pdrv, const BYTE * buff, LBA_t sector, UINT count) {
                 dprintf(2, "%s: retrying at lower baud rate %u\r\n", __func__, (unsigned)ipass + 1);
             if (-1 == spi_sd_init(ipass)) continue;
         }
+
+        fatfs_sectors_written += count;
 
         if (spi_sd_write_blocks(buff, count, sector) != -1) break;
         if (ipass > 3) return RES_ERROR;
@@ -85,7 +136,13 @@ DRESULT disk_write(BYTE pdrv, const BYTE * buff, LBA_t sector, UINT count) {
 
 DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void * buff) {
     (void)pdrv;
-    if (CTRL_SYNC == cmd) return 0;
+    if (CTRL_SYNC == cmd) {
+        if (deferred_zeros_sector_count) {
+            const DRESULT res = flush_deferred_zeros();
+            if (res) return res;
+        }
+        return 0;
+    }
     else if (GET_BLOCK_SIZE == cmd)
         *(LBA_t *)buff = 1; /* TODO: populate this from actual */
     else if (GET_SECTOR_COUNT == cmd)
