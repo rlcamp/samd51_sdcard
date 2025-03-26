@@ -441,6 +441,9 @@ int spi_sd_init(unsigned baud_rate_reduction) {
         cs_high();
 
         if (0x01 == cmd0_r1_response) break;
+
+        /* give other stuff a chance to run if we are looping */
+        __SEV(); yield();
     }
 
     /* cmd8, check voltage range and test pattern */
