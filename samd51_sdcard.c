@@ -72,10 +72,6 @@ static void spi_dma_init(void) {
     /* clear sw trigger */
     DMAC->SWTRIGCTRL.reg &= ~(1 << IDMA_SPI_READ);
 
-    NVIC_EnableIRQ(DMAC_1_IRQn);
-    NVIC_SetPriority(DMAC_1_IRQn, (1 << __NVIC_PRIO_BITS) - 1);
-    static_assert(1 == IDMA_SPI_READ, "dmac channel isr mismatch");
-
     DMAC->Channel[IDMA_SPI_READ].CHCTRLA.reg = (DMAC_CHCTRLA_Type) { .bit = {
         .RUNSTDBY = 1,
         .TRIGSRC = 0x06, /* trigger when sercom1 has received */
@@ -744,10 +740,11 @@ int spi_sd_read_blocks(void * buf, unsigned long blocks, unsigned long long bloc
         DMAC->Channel[IDMA_SPI_READ].CHCTRLA.bit.ENABLE = 1;
         DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
 
-        /* wait here until dma transaction finishes */
+        /* yield/sleep here until dma write transaction finishes */
         while (!(DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.bit.TCMPL)) yield();
         DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.reg = (DMAC_CHINTFLAG_Type) { .bit.TCMPL = 1 }.reg;
 
+        /* busy loop for the last little bit until the read transaction finishes */
         while (!(DMAC->Channel[IDMA_SPI_READ].CHINTFLAG.bit.TCMPL));
         DMAC->Channel[IDMA_SPI_READ].CHINTFLAG.reg = (DMAC_CHINTFLAG_Type) { .bit.TCMPL = 1 }.reg;
         DMAC->Channel[IDMA_SPI_READ].CHINTENCLR.reg = (DMAC_CHINTENCLR_Type) { .bit.TCMPL = 1 }.reg;
