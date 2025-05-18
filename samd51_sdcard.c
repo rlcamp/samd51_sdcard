@@ -617,10 +617,6 @@ int spi_sd_write_some_blocks(const void * buf, const unsigned long blocks) {
         /* this leaves sercom in rx disabled, one byte mode */
         wait_for_card_ready();
 
-        /* assuming we spun on WFE in one of the above, re-raise the event register explicitly,
-         so that caller does not have to assume calling this function may have cleared it */
-        __SEV();
-
         if (0b00101 != response) {
             if (0b01011 == response)
                 dprintf(2, "%s: bad crc\r\n", __func__);
