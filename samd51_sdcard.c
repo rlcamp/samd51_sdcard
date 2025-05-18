@@ -258,58 +258,6 @@ static void wait_for_card_ready(void) {
     while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
 }
 
-static int spi_sd_flush_write_block(void) {
-    while (!DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.bit.TCMPL) yield();
-    DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.reg = (DMAC_CHINTFLAG_Type) { .bit.TCMPL = 1 }.reg;
-
-    /* grab the CRC that the DMAC calculated on the outgoing 512 bytes... */
-    while (DMAC->CRCSTATUS.bit.CRCBUSY);
-    const uint16_t crc = DMAC->CRCCHKSUM.reg;
-
-    /* need to wait on TXC before updating the LENGTH register */
-    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
-
-    /* tell the SERCOM that the next transaction will be two bytes */
-    SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 1, .bit.LEN = 2 }.reg;
-    while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
-
-    /* blocking send of crc. card expects high byte of CRC first, samd51 sends low byte of DATA first */
-    while (!SERCOM1->SPI.INTFLAG.bit.DRE);
-    SERCOM1->SPI.DATA.bit.DATA = __builtin_bswap16(crc);
-    card_overhead_numerator += 2;
-
-    /* wait for crc to complete sending before enabling rx */
-    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
-
-    SERCOM1->SPI.CTRLB.bit.RXEN = 1;
-    while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
-
-    SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 1, .bit.LEN = 1 }.reg;
-    while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
-
-    /* blocking receive of one byte */
-    while (!SERCOM1->SPI.INTFLAG.bit.DRE);
-    SERCOM1->SPI.DATA.bit.DATA = 0xFF;
-    card_overhead_numerator++;
-    while (!SERCOM1->SPI.INTFLAG.bit.RXC);
-    const unsigned char response = SERCOM1->SPI.DATA.bit.DATA & 0b11111;
-
-    /* this leaves sercom in rx disabled, one byte mode */
-    wait_for_card_ready();
-
-    /* assuming we spun on WFE in one of the above, re-raise the event register explicitly,
-     so that caller does not have to assume calling this function may have cleared it */
-    __SEV();
-
-    if (0b00101 == response) return 0;
-
-    else if (0b01011 == response)
-        dprintf(2, "%s: bad crc\r\n", __func__);
-    else
-        dprintf(2, "%s: error 0x%x\r\n", __func__, response);
-    return -1;
-}
-
 static void spi_send(const void * buf, const size_t size) {
     const size_t whole_words = size / 4, rem = size % 4;
 
@@ -585,54 +533,100 @@ int spi_sd_write_pre_erase(unsigned long blocks) {
     return acmd23_r1_response ? -1 : 0;
 }
 
-static void spi_sd_start_writing_a_block(const void * buf) {
-    while (!SERCOM1->SPI.INTFLAG.bit.DRE);
-    SERCOM1->SPI.DATA.bit.DATA = 0xfc;
-    card_overhead_numerator++;
-
-    while (!SERCOM1->SPI.INTFLAG.bit.TXC);
-    SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 0 }.reg;
-    while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
-
-    static const uint32_t zero_word = 0;
-    *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_WRITE) = (DmacDescriptor) {
-        .BTCNT.reg = 512 / 4,
-        .SRCADDR.reg = buf ? ((size_t)buf) + 512 : (size_t)&zero_word,
-        .DSTADDR.reg = (size_t)&(SERCOM1->SPI.DATA.reg),
-        .BTCTRL = { .bit = {
-            .VALID = 1,
-            .BLOCKACT = DMAC_BTCTRL_BLOCKACT_INT_Val,
-            .SRCINC = buf ? 1 : 0,
-            .DSTINC = 0, /* write to the same register every time */
-            .BEATSIZE = DMAC_BTCTRL_BEATSIZE_WORD_Val, /* transfer 32 bits per beat */
-        }}
-    };
-
-    /* clear pending interrupt from before */
-    DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.reg = (DMAC_CHINTFLAG_Type) { .bit.TCMPL = 1 }.reg;
-
-    /* enable interrupt on write completion */
-    DMAC->Channel[IDMA_SPI_WRITE].CHINTENSET.reg = (DMAC_CHINTENSET_Type) { .bit.TCMPL = 1 }.reg;
-
-    /* reset the crc */
-    DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0 }.reg;
-    DMAC->CRCCHKSUM.reg = 0;
-    DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0x20 + IDMA_SPI_WRITE }.reg;
-
-    /* ensure changes to descriptors have propagated to sram prior to enabling peripheral */
-    __DSB();
-
-    /* setting this starts the transaction */
-    DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
-
-    card_overhead_numerator += 512;
-    card_overhead_denominator += 512;
-}
-
 int spi_sd_write_some_blocks(const void * buf, const unsigned long blocks) {
     for (size_t iblock = 0; iblock < blocks; iblock++) {
-        spi_sd_start_writing_a_block(buf ? (void *)((unsigned char *)buf + 512 * iblock) : NULL);
-        if (-1 == spi_sd_flush_write_block()) {
+        const unsigned char * block = buf ? (void *)((unsigned char *)buf + 512 * iblock) : NULL;
+
+        while (!SERCOM1->SPI.INTFLAG.bit.DRE);
+        SERCOM1->SPI.DATA.bit.DATA = 0xfc;
+        card_overhead_numerator++;
+
+        while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+        SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 0 }.reg;
+        while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
+
+        static const uint32_t zero_word = 0;
+        *(((DmacDescriptor *)DMAC->BASEADDR.bit.BASEADDR) + IDMA_SPI_WRITE) = (DmacDescriptor) {
+            .BTCNT.reg = 512 / 4,
+            .SRCADDR.reg = block ? ((size_t)block) + 512 : (size_t)&zero_word,
+            .DSTADDR.reg = (size_t)&(SERCOM1->SPI.DATA.reg),
+            .BTCTRL = { .bit = {
+                .VALID = 1,
+                .BLOCKACT = DMAC_BTCTRL_BLOCKACT_INT_Val,
+                .SRCINC = block ? 1 : 0,
+                .DSTINC = 0, /* write to the same register every time */
+                .BEATSIZE = DMAC_BTCTRL_BEATSIZE_WORD_Val, /* transfer 32 bits per beat */
+            }}
+        };
+
+        /* clear pending interrupt from before */
+        DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.reg = (DMAC_CHINTFLAG_Type) { .bit.TCMPL = 1 }.reg;
+
+        /* enable interrupt on write completion */
+        DMAC->Channel[IDMA_SPI_WRITE].CHINTENSET.reg = (DMAC_CHINTENSET_Type) { .bit.TCMPL = 1 }.reg;
+
+        /* reset the crc */
+        DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0 }.reg;
+        DMAC->CRCCHKSUM.reg = 0;
+        DMAC->CRCCTRL.reg = (DMAC_CRCCTRL_Type) { .bit.CRCSRC = 0x20 + IDMA_SPI_WRITE }.reg;
+
+        /* ensure changes to descriptors have propagated to sram prior to enabling peripheral */
+        __DSB();
+
+        /* setting this starts the transaction */
+        DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
+
+        card_overhead_numerator += 512;
+        card_overhead_denominator += 512;
+
+        while (!DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.bit.TCMPL) yield();
+        DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.reg = (DMAC_CHINTFLAG_Type) { .bit.TCMPL = 1 }.reg;
+
+        /* grab the CRC that the DMAC calculated on the outgoing 512 bytes... */
+        while (DMAC->CRCSTATUS.bit.CRCBUSY);
+        const uint16_t crc = DMAC->CRCCHKSUM.reg;
+
+        /* need to wait on TXC before updating the LENGTH register */
+        while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+
+        /* tell the SERCOM that the next transaction will be two bytes */
+        SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 1, .bit.LEN = 2 }.reg;
+        while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
+
+        /* blocking send of crc. card expects high byte of CRC first, samd51 sends low byte of DATA first */
+        while (!SERCOM1->SPI.INTFLAG.bit.DRE);
+        SERCOM1->SPI.DATA.bit.DATA = __builtin_bswap16(crc);
+        card_overhead_numerator += 2;
+
+        /* wait for crc to complete sending before enabling rx */
+        while (!SERCOM1->SPI.INTFLAG.bit.TXC);
+
+        SERCOM1->SPI.CTRLB.bit.RXEN = 1;
+        while (SERCOM1->SPI.SYNCBUSY.bit.CTRLB);
+
+        SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 1, .bit.LEN = 1 }.reg;
+        while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
+
+        /* blocking receive of one byte */
+        while (!SERCOM1->SPI.INTFLAG.bit.DRE);
+        SERCOM1->SPI.DATA.bit.DATA = 0xFF;
+        card_overhead_numerator++;
+        while (!SERCOM1->SPI.INTFLAG.bit.RXC);
+        const unsigned char response = SERCOM1->SPI.DATA.bit.DATA & 0b11111;
+
+        /* this leaves sercom in rx disabled, one byte mode */
+        wait_for_card_ready();
+
+        /* assuming we spun on WFE in one of the above, re-raise the event register explicitly,
+         so that caller does not have to assume calling this function may have cleared it */
+        __SEV();
+
+        if (0b00101 != response) {
+            if (0b01011 == response)
+                dprintf(2, "%s: bad crc\r\n", __func__);
+            else
+                dprintf(2, "%s: error 0x%x\r\n", __func__, response);
+
             cs_high();
             spi_disable();
             return -1;
