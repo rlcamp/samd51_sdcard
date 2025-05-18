@@ -305,7 +305,7 @@ static int spi_sd_flush_write_block(void) {
 
     else if (0b01011 == response)
         dprintf(2, "%s: bad crc\r\n", __func__);
-    else if (0b01011 == response)
+    else
         dprintf(2, "%s: error 0x%x\r\n", __func__, response);
     return -1;
 }
