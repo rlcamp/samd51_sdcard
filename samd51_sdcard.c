@@ -17,7 +17,7 @@
 #define BAUD_RATE_FAST 24000000ULL
 /* note this baud rate is too fast for DMA to keep up if doing two-way DRE-triggered DMA */
 
-static_assert(((48000000ULL / (2U * BAUD_RATE_FAST) - 1U) + 1U) * (2U * BAUD_RATE_FAST) == 48000000ULL,
+static_assert(((F_CPU / (2U * BAUD_RATE_FAST) - 1U) + 1U) * (2U * BAUD_RATE_FAST) == F_CPU,
               "baud rate not possible");
 
 #define IDMA_SPI_WRITE 2
@@ -172,8 +172,8 @@ static void spi_init() {
     GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].bit.CHEN = 0;
     while (GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].bit.CHEN);
     GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].reg = (GCLK_PCHCTRL_Type) { .bit = {
-        /* if GCLK0 is not 48 MHz, assume GCLK1 is */
-        .GEN = GCLK_GENCTRL_SRC_DFLL_Val == GCLK->GENCTRL[0].bit.SRC ? GCLK_PCHCTRL_GEN_GCLK0_Val : GCLK_PCHCTRL_GEN_GCLK1_Val,
+        /* unconditionally use GCLK0 as the clock ref */
+        .GEN = GCLK_PCHCTRL_GEN_GCLK0_Val,
         .CHEN = 1
     }}.reg;
     while (!GCLK->PCHCTRL[SERCOM1_GCLK_ID_CORE].bit.CHEN);
@@ -201,7 +201,7 @@ static void spi_init() {
 
     SERCOM1->SPI.CTRLC.bit.DATA32B = 1;
 
-    SERCOM1->SPI.BAUD.reg = 48000000ULL / (2U * BAUD_RATE_SLOW) - 1U;
+    SERCOM1->SPI.BAUD.reg = F_CPU / (2U * BAUD_RATE_SLOW) - 1U;
 
     spi_dma_init();
 
@@ -356,7 +356,7 @@ static uint8_t command_and_r1_response(const uint8_t cmd, const uint32_t arg) {
 }
 
 void spi_sd_restore_baud_rate(void) {
-    SERCOM1->SPI.BAUD.reg = 48000000ULL / (2U * (BAUD_RATE_FAST)) - 1U;
+    SERCOM1->SPI.BAUD.reg = F_CPU / (2U * (BAUD_RATE_FAST)) - 1U;
 }
 
 int spi_sd_init(unsigned baud_rate_reduction) {
@@ -449,7 +449,7 @@ int spi_sd_init(unsigned baud_rate_reduction) {
 
     /* now bump the baud rate up to the max allowable speed */
     spi_disable();
-    SERCOM1->SPI.BAUD.reg = 48000000ULL / (2U * BAUD_RATE_FAST) - 1U + baud_rate_reduction;
+    SERCOM1->SPI.BAUD.reg = F_CPU / (2U * BAUD_RATE_FAST) - 1U + baud_rate_reduction;
     spi_enable();
 
     /* TODO: if any of the following fail, restart the procedure with a lower baud rate */
