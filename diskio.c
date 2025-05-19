@@ -14,7 +14,7 @@
 
 size_t fatfs_sectors_read = 0, fatfs_sectors_written = 0;
 
-unsigned char diskio_verbose = 0;
+__attribute((weak)) unsigned char verbose = 0;
 
 unsigned char diskio_initted = 0;
 
@@ -27,7 +27,7 @@ DSTATUS disk_initialize(BYTE pdrv) {
     (void)pdrv;
     if (!diskio_initted) {
         for (size_t ipass = 0;; ipass++) {
-            if (ipass > 0 && diskio_verbose)
+            if (ipass > 0 && verbose >= 1)
                 dprintf(2, "%s: retrying at lower baud rate %u\r\n", __func__, (unsigned)ipass + 1);
             if (spi_sd_init(ipass) != -1) break;
             if (ipass > 3) return STA_NOINIT;
@@ -47,7 +47,7 @@ static DRESULT flush_deferred_zeros(void) {
 
     for (size_t ipass = 0;; ipass++) {
         if (ipass > 0) {
-            if (diskio_verbose)
+            if (verbose >= 1)
                 dprintf(2, "%s: retrying at lower baud rate %u\r\n", __func__, (unsigned)ipass + 1);
             if (-1 == spi_sd_init(ipass)) continue;
         }
@@ -70,12 +70,12 @@ DRESULT disk_read(BYTE pdrv, BYTE * buff, LBA_t sector, UINT count) {
         if (res) return res;
     }
 
-    if (diskio_verbose)
+    if (verbose >= 2)
         dprintf(2, "%s(%d): reading %u blocks starting at %u\r\n", __func__, __LINE__, count, (unsigned)sector);
 
     for (size_t ipass = 0;; ipass++) {
         if (ipass > 0) {
-            if (diskio_verbose)
+            if (verbose >= 1)
                 dprintf(2, "%s: retrying at lower baud rate %u\r\n", __func__, (unsigned)ipass + 1);
             if (-1 == spi_sd_init(ipass)) continue;
         }
@@ -113,12 +113,12 @@ DRESULT disk_write(BYTE pdrv, const BYTE * buff, LBA_t sector, UINT count) {
         if (res) return res;
     }
 
-    if (diskio_verbose)
+    if (verbose >= 2)
         dprintf(2, "%s(%d): writing block(s) starting at %u\r\n", __func__, __LINE__, (unsigned)sector);
 
     for (size_t ipass = 0;; ipass++) {
         if (ipass > 0) {
-            if (diskio_verbose)
+            if (verbose >= 1)
                 dprintf(2, "%s: retrying at lower baud rate %u\r\n", __func__, (unsigned)ipass + 1);
             if (-1 == spi_sd_init(ipass)) continue;
         }
