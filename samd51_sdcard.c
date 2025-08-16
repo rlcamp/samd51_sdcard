@@ -13,13 +13,6 @@
 #include <limits.h>
 #include <stdio.h>
 
-#define BAUD_RATE_SLOW 250000
-#define BAUD_RATE_FAST 24000000ULL
-/* note this baud rate is too fast for DMA to keep up if doing two-way DRE-triggered DMA */
-
-static_assert(((F_CPU / (2U * BAUD_RATE_FAST) - 1U) + 1U) * (2U * BAUD_RATE_FAST) == F_CPU,
-              "baud rate not possible");
-
 #define IDMA_SPI_WRITE 2
 #define IDMA_SPI_READ 1
 
@@ -201,7 +194,8 @@ static void spi_init() {
 
     SERCOM1->SPI.CTRLC.bit.DATA32B = 1;
 
-    SERCOM1->SPI.BAUD.reg = F_CPU / (2U * BAUD_RATE_SLOW) - 1U;
+    /* this results in 400 kBd at 120 MHz, lower at lower */
+    SERCOM1->SPI.BAUD.reg = 149;
 
     spi_dma_init();
 
@@ -356,7 +350,8 @@ static uint8_t command_and_r1_response(const uint8_t cmd, const uint32_t arg) {
 }
 
 void spi_sd_restore_baud_rate(void) {
-    SERCOM1->SPI.BAUD.reg = F_CPU / (2U * (BAUD_RATE_FAST)) - 1U;
+    /* use mclk/4 as the baud rate */
+    SERCOM1->SPI.BAUD.reg = 1;
 }
 
 int spi_sd_init(unsigned baud_rate_reduction) {
@@ -425,8 +420,8 @@ int spi_sd_init(unsigned baud_rate_reduction) {
 
     /* cmd55, then acmd41, init. must loop this until the response is 0 */
     for (size_t ipass = 0;; ipass++) {
-        if (ipass > BAUD_RATE_SLOW / (8 * 20)) {
-            /* each pass takes about 20 bytes minimum, give up after one second */
+        if (ipass > 2500) {
+            /* each pass takes about 20 bytes minimum, give up after one second at 400 kBd */
             spi_disable();
             return -1;
         }
@@ -447,9 +442,9 @@ int spi_sd_init(unsigned baud_rate_reduction) {
         if (!acmd41_r1_response) break;
     }
 
-    /* now bump the baud rate up to the max allowable speed */
+    /* now bump the baud rate up to the max allowable speed (mclk/4) */
     spi_disable();
-    SERCOM1->SPI.BAUD.reg = F_CPU / (2U * BAUD_RATE_FAST) - 1U + baud_rate_reduction;
+    SERCOM1->SPI.BAUD.reg = 1 + baud_rate_reduction;
     spi_enable();
 
     /* TODO: if any of the following fail, restart the procedure with a lower baud rate */
