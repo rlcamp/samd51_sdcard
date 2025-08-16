@@ -23,6 +23,11 @@ DSTATUS disk_status(BYTE pdrv) {
     return diskio_initted ? 0 : STA_NOINIT;
 }
 
+static LBA_t block_cache_sectors[64];
+static unsigned char block_cache[64][512];
+static const size_t B = sizeof(block_cache) / sizeof(block_cache[0]);
+static size_t icache = 0;
+
 DSTATUS disk_initialize(BYTE pdrv) {
     (void)pdrv;
     if (!diskio_initted) {
@@ -34,6 +39,9 @@ DSTATUS disk_initialize(BYTE pdrv) {
         }
         spi_sd_restore_baud_rate();
     }
+
+    __builtin_memset(block_cache_sectors, 0, sizeof(block_cache_sectors));
+
     diskio_initted = 1;
     return 0;
 }
@@ -62,6 +70,18 @@ static DRESULT flush_deferred_zeros(void) {
     return 0;
 }
 
+static void cache_block(const BYTE * buff, LBA_t sector) {
+    for (size_t icache_search = 0; icache_search < B; icache_search++)
+        if (sector && block_cache_sectors[icache_search] == sector) {
+            icache = icache_search;
+            break;
+        }
+
+    __builtin_memcpy(block_cache[icache], buff, 512);
+    block_cache_sectors[icache] = sector;
+    icache = (icache + 1) % B;
+}
+
 DRESULT disk_read(BYTE pdrv, BYTE * buff, LBA_t sector, UINT count) {
     (void)pdrv;
 
@@ -69,6 +89,14 @@ DRESULT disk_read(BYTE pdrv, BYTE * buff, LBA_t sector, UINT count) {
         const DRESULT res = flush_deferred_zeros();
         if (res) return res;
     }
+
+    for (size_t icache_search = 0; icache_search < B; icache_search++)
+        if (1 == count && sector && block_cache_sectors[icache_search] == sector) {
+            if (verbose >= 2)
+                dprintf(2, "%s(%d): reusing cached block %u at %u\r\n", __func__, __LINE__, (unsigned)sector, icache_search);
+            __builtin_memcpy(buff, block_cache[icache_search], 512);
+            return 0;
+        }
 
     if (verbose >= 2)
         dprintf(2, "%s(%d): reading %u blocks starting at %u\r\n", __func__, __LINE__, count, (unsigned)sector);
@@ -86,6 +114,8 @@ DRESULT disk_read(BYTE pdrv, BYTE * buff, LBA_t sector, UINT count) {
         if (spi_sd_read_blocks(buff, count, sector) != -1) break;
         if (ipass > 3) return RES_ERROR;
     }
+
+    cache_block(buff, sector);
 
     spi_sd_restore_baud_rate();
     return 0;
@@ -129,6 +159,8 @@ DRESULT disk_write(BYTE pdrv, const BYTE * buff, LBA_t sector, UINT count) {
         if (ipass > 3) return RES_ERROR;
 
     }
+
+    cache_block(buff, sector);
 
     spi_sd_restore_baud_rate();
     return 0;
