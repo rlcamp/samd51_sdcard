@@ -22,8 +22,6 @@ __attribute__((weak, aligned(16))) DmacDescriptor dmac_descriptors[8] = { 0 }, d
 extern void yield(void);
 __attribute((weak)) void yield(void) { }
 
-size_t card_overhead_numerator = 0, card_overhead_denominator = 0;
-
 static void spi_dma_init(void) {
     /* if dma has not yet been initted... */
     if (!DMAC->BASEADDR.bit.BASEADDR) {
@@ -211,7 +209,7 @@ __attribute((always_inline)) inline
 static uint8_t spi_receive_one_byte_with_rx_enabled(void) {
     while (!SERCOM1->SPI.INTFLAG.bit.DRE);
     SERCOM1->SPI.DATA.bit.DATA = 0xff;
-    card_overhead_numerator++;
+
     while (!SERCOM1->SPI.INTFLAG.bit.RXC);
     return SERCOM1->SPI.DATA.bit.DATA;
 }
@@ -234,13 +232,13 @@ static void wait_for_card_ready(void) {
 
     while (!SERCOM1->SPI.INTFLAG.bit.DRE);
     SERCOM1->SPI.DATA.bit.DATA = 0xffffffff;
-    card_overhead_numerator += 4;
+
     while (!SERCOM1->SPI.INTFLAG.bit.RXC);
     if (0xffffffff != SERCOM1->SPI.DATA.bit.DATA)
         do {
             while (!SERCOM1->SPI.INTFLAG.bit.DRE);
             SERCOM1->SPI.DATA.bit.DATA = 0xffffffff;
-            card_overhead_numerator += 4;
+
             while (!SERCOM1->SPI.INTFLAG.bit.RXC) { __SEV(); yield(); };
         } while (SERCOM1->SPI.DATA.bit.DATA != 0xffffffff);
 
@@ -278,7 +276,6 @@ static void spi_send(const void * buf, const size_t size) {
         /* when sending one byte in 32 bit mode we apparently need to wait for TXC, not DRE */
         while (!SERCOM1->SPI.INTFLAG.bit.TXC);
     }
-    card_overhead_numerator += size;
 
     SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 1, .bit.LEN = 1 }.reg;
     while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
@@ -293,7 +290,7 @@ static uint32_t spi_receive_uint32be(void) {
 
     while (!SERCOM1->SPI.INTFLAG.bit.DRE);
     SERCOM1->SPI.DATA.bit.DATA = 0xffffffff;
-    card_overhead_numerator += 4;
+
     while (!SERCOM1->SPI.INTFLAG.bit.RXC);
     const uint32_t bits = SERCOM1->SPI.DATA.bit.DATA;
 
@@ -534,7 +531,6 @@ int spi_sd_write_some_blocks(const void * buf, const unsigned long blocks) {
 
         while (!SERCOM1->SPI.INTFLAG.bit.DRE);
         SERCOM1->SPI.DATA.bit.DATA = 0xfc;
-        card_overhead_numerator++;
 
         while (!SERCOM1->SPI.INTFLAG.bit.TXC);
         SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 0 }.reg;
@@ -571,9 +567,6 @@ int spi_sd_write_some_blocks(const void * buf, const unsigned long blocks) {
         /* setting this starts the transaction */
         DMAC->Channel[IDMA_SPI_WRITE].CHCTRLA.bit.ENABLE = 1;
 
-        card_overhead_numerator += 512;
-        card_overhead_denominator += 512;
-
         while (!DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.bit.TCMPL) yield();
         DMAC->Channel[IDMA_SPI_WRITE].CHINTFLAG.reg = (DMAC_CHINTFLAG_Type) { .bit.TCMPL = 1 }.reg;
 
@@ -591,7 +584,6 @@ int spi_sd_write_some_blocks(const void * buf, const unsigned long blocks) {
         /* blocking send of crc. card expects high byte of CRC first, samd51 sends low byte of DATA first */
         while (!SERCOM1->SPI.INTFLAG.bit.DRE);
         SERCOM1->SPI.DATA.bit.DATA = __builtin_bswap16(crc);
-        card_overhead_numerator += 2;
 
         /* wait for crc to complete sending before enabling rx */
         while (!SERCOM1->SPI.INTFLAG.bit.TXC);
@@ -605,7 +597,7 @@ int spi_sd_write_some_blocks(const void * buf, const unsigned long blocks) {
         /* blocking receive of one byte */
         while (!SERCOM1->SPI.INTFLAG.bit.DRE);
         SERCOM1->SPI.DATA.bit.DATA = 0xFF;
-        card_overhead_numerator++;
+
         while (!SERCOM1->SPI.INTFLAG.bit.RXC);
         const unsigned char response = SERCOM1->SPI.DATA.bit.DATA & 0b11111;
 
@@ -742,12 +734,10 @@ int spi_sd_read_blocks(void * buf, unsigned long blocks, unsigned long long bloc
         SERCOM1->SPI.LENGTH.reg = (SERCOM_SPI_LENGTH_Type) { .bit.LENEN = 1, .bit.LEN = 2 }.reg;
         while (SERCOM1->SPI.SYNCBUSY.bit.LENGTH);
 
-        card_overhead_numerator += 512;
-
         /* read and discard two crc bytes */
         while (!SERCOM1->SPI.INTFLAG.bit.DRE);
         SERCOM1->SPI.DATA.bit.DATA = 0xFFFF;
-        card_overhead_numerator += 2;
+
         while (!SERCOM1->SPI.INTFLAG.bit.RXC);
         const uint16_t crc_swapped = SERCOM1->SPI.DATA.bit.DATA;
         const uint16_t crc_received = __builtin_bswap16(crc_swapped);
